@@ -306,6 +306,49 @@ export default async function (pi: ExtensionAPI) {
 
   pi.registerCommand("viking", {
     description: "OpenViking: status, commit, settings, recall [on|off]",
+    getArgumentCompletions: (prefix: string) => {
+      const items: Array<{ value: string; label: string; description?: string }> = [];
+      const push = (value: string, label: string, description: string) =>
+        items.push({ value, label, description });
+
+      const trimmed = prefix.trim();
+      const endsSpace = /\s$/.test(prefix);
+      const words = trimmed ? trimmed.split(/\s+/) : [];
+
+      // "/viking <tab>" → all subcommands
+      if (words.length === 0) {
+        push("commit", "commit", "force a memory commit now");
+        push("settings", "settings", "open the settings page");
+        push("recall", "recall", "toggle context injection [on|off]");
+        return items;
+      }
+
+      const first = words[0];
+      const isRecall = ["recall", "inject", "injection"].includes(first);
+
+      // Second-level: "/viking recall [on|off]"
+      if (isRecall) {
+        const partial = words.length === 1 && !endsSpace ? "" : (words[1] ?? "");
+        if (words.length <= 2) {
+          if ("on".startsWith(partial)) push(`${first} on`, "on", "re-enable context injection");
+          if ("off".startsWith(partial)) push(`${first} off`, "off", "pause context injection (session only)");
+        }
+        return items.length ? items : null;
+      }
+
+      // First-level: completing the subcommand word itself
+      if (words.length === 1 && !endsSpace) {
+        const subs: Array<[string, string]> = [
+          ["commit", "force a memory commit now"],
+          ["settings", "open the settings page"],
+          ["recall", "toggle context injection [on|off]"],
+        ];
+        for (const [word, desc] of subs) {
+          if (word.startsWith(first)) push(word, word, desc);
+        }
+      }
+      return items.length ? items : null;
+    },
     handler: async (args, ctx) => {
       if (!connected) {
         ctx.ui.notify("OpenViking: not connected", "warning");
