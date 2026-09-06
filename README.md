@@ -160,7 +160,7 @@ integrations should configure category `quotas` when they need exact ceilings.
 | `captureMode`            | `"semantic"` | `"semantic"` (always capture) or `"keyword"` (trigger-based)           |
 | `captureMaxLength`       | `24000`    | Max sanitized text length for the capture decision                       |
 | `captureAssistantTurns`  | `true`     | Include assistant turns (text + tool USE inputs)                         |
-| `captureToolResults`     | `false`    | Include tool result output (noisy — off by default)                      |
+| `statusBar`              | nested     | Footer segment config: `enabled`, `showSync`, `showTakeover`, `showInjection`, `showSession` (all default `true`) || `captureToolResults`     | `false`    | Include tool result output (noisy — off by default)                      |
 | `captureToolMaxChars`    | `1000000`  | Guard cap on one tool part's `tool_output`; the server externalizes oversized output |
 | `commitTokenThreshold`   | `20000`    | Pending-token threshold for client-driven commit                         |
 | `commitKeepRecentCount`  | `10`       | Live tail kept after commit                                              |
@@ -265,7 +265,44 @@ The extension registers 7 tools that pi's model can invoke on demand:
 | `viking_add_resource`    | Ingest a URL into OpenViking for indexed retrieval         |
 | `viking_archive_expand`  | Expand an archived session back into raw conversation      |
 
-The canonical `/viking` command (type `/viking` in pi's chat) displays connection status, session info, and accepts `commit` for manual synchronous commit.
+The canonical `/viking` command (type `/viking` in pi's chat) displays connection status, session info, and accepts subcommands:
+
+| Subcommand                | Behavior                                                                                                                                                                                    |
+|---------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `/viking`                 | Status: connection, session, injection state, takeover progress                                                                                                                             |
+| `/viking commit`          | Force a synchronous commit (memory extraction) now                                                                                                                                          |
+| `/viking settings`        | Open the interactive settings page (see below)                                                                                                                                               |
+| `/viking recall [on\|off]` | Toggle context injection for this session: when off, no `<openviking-context>` blocks (memory recall, profile, archive overview) are injected into prompts. Sync and takeover keep running. Not persisted. |
+
+### Footer Status Bar
+
+When enabled (default), the extension renders a compact, color-coded segment in pi's footer:
+
+```
+OV ● ⇅12 · ctx 2/5 · 12k/30k · ⏸inj · pi-0f3a9…
+```
+
+| Segment      | Meaning                                                                          |
+|--------------|----------------------------------------------------------------------------------|
+| `OV ●` / `OV ○` | Connection state (colored green/red)                                          |
+| `⇅n`         | Entries synced to the OpenViking session so far                                   |
+| `ctx c/l`    | Takeover coverage: archived/seen user turns                                       |
+| `12k/30k`    | Token pressure since the last takeover advance vs the takeover threshold          |
+| `⏸inj`       | Context injection paused for this session (`/viking recall off`)                  |
+| `pi-0f3a9…`  | OpenViking session id (dim)                                                        |
+
+Empty segments are omitted, token counts are humanized, and colors follow the active pi theme. The bar itself, plus per-segment visibility, are configured in `/viking settings` under *misc · footer status bar*, which opens a second-level menu with the master switch and toggles for each segment. Settings persist to `config.json` under the nested `statusBar` object.
+
+### Interactive Settings Page
+
+`/viking settings` opens a full-TUI settings dialog built on pi's `SettingsList`:
+
+- A header with live connection status, session id, version, and injection state
+- Every user-manageable option from `config.json`: sync & capture, recall budgets and thresholds, context/profile budgets, commit thresholds, and the full takeover section
+- Booleans and enums cycle with `Enter`/`Space`; numeric values open a preset picker submenu
+- `/` fuzzy-filters by label; `Esc` closes
+
+Changes mutate the live config immediately (managers hold the config by reference) and are persisted back to `config.json` on every change, preserving unknown keys and merging (not replacing) the nested `takeover` object. Credential-derived fields (`endpoint`, `apiKey`, account/user/peer) are never written — they come from the credentials resolver / environment. The first item, *session · context injection*, is the same temporary toggle as `/viking recall` and is intentionally not persisted.
 
 ## Compared to Pi's Built-in Memory
 
@@ -306,9 +343,10 @@ pi-coding-agent-extension/
 ├── sync.ts              # Turn capture, write queue, session lifecycle
 ├── recall.ts            # Synchronous recall with ranking + budget
 ├── takeover.ts          # Thin pi binding around lib/takeover-core.mjs
-├── tools.ts             # 7 registered LLM tools + /viking command
+├── tools.ts             # 7 registered LLM tools
+├── settings.ts          # Interactive settings page (/viking settings)
 ├── lib/takeover-core.mjs # Pure context-takeover state machine
-├── index.ts             # Extension entry point (event handlers)
+├── index.ts             # Extension entry point (event handlers + /viking command)
 ├── TAKEOVER.md          # Context-takeover design
 └── README.md
 ```

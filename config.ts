@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildUserAgent, resolveOpenVikingCredentials } from "./shared/credentials.mjs";
@@ -44,10 +44,28 @@ export interface OVConfig {
   captureMaxLength: number;
   captureToolMaxChars: number;
   captureAssistantTurns: boolean;
+  statusBar: StatusBarConfig;
   bypassPatterns: string[];
   logLevel: "silent" | "error" | "info";
   debugLogPath: string;
 }
+
+/** Per-segment visibility for the footer status bar. */
+export interface StatusBarConfig {
+  enabled: boolean;
+  showSync: boolean;
+  showTakeover: boolean;
+  showInjection: boolean;
+  showSession: boolean;
+}
+
+const DEFAULT_STATUS_BAR: StatusBarConfig = {
+  enabled: true,
+  showSync: true,
+  showTakeover: true,
+  showInjection: true,
+  showSession: true,
+};
 
 const DEFAULT_CONFIG: OVConfig = {
   enabled: true,
@@ -90,6 +108,7 @@ const DEFAULT_CONFIG: OVConfig = {
   captureMaxLength: 24000,
   captureToolMaxChars: 1000000,
   captureAssistantTurns: true,
+  statusBar: { ...DEFAULT_STATUS_BAR },
   bypassPatterns: [],
   logLevel: "error",
   debugLogPath: "",
@@ -97,6 +116,80 @@ const DEFAULT_CONFIG: OVConfig = {
 
 export function loadConfigFromModuleUrl(moduleUrl: string): OVConfig {
   return loadConfig(dirname(fileURLToPath(moduleUrl)));
+}
+
+/**
+ * Persist user-manageable settings back to config.json.
+ *
+ * Unknown keys already present in the file are preserved, and the nested
+ * `takeover` object is merged rather than replaced. Credential-derived fields
+ * (endpoint, apiKey, account, user, peerId) are deliberately not written:
+ * they come from the credentials resolver / environment, and the hand-edited
+ * file intentionally does not carry them.
+ */
+export function saveConfig(extensionDir: string, config: OVConfig): boolean {
+  const configPath = join(extensionDir, "config.json");
+  let existing: any = {};
+  try {
+    if (existsSync(configPath)) existing = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch {
+    existing = {};
+  }
+
+  const priorTakeover = existing.takeover && typeof existing.takeover === "object" ? existing.takeover : {};
+  const priorStatusBar = existing.statusBar && typeof existing.statusBar === "object" ? existing.statusBar : {};
+  const next: any = {
+    ...existing,
+    enabled: config.enabled,
+    syncTurns: config.syncTurns,
+    recallTokenBudget: config.recallTokenBudget,
+    recallMaxContentChars: config.recallMaxContentChars,
+    recallPreferAbstract: config.recallPreferAbstract,
+    recallLedger: config.recallLedger,
+    recallPeerScope: config.recallPeerScope,
+    recallQueryExpansion: config.recallQueryExpansion,
+    scoreThreshold: config.scoreThreshold,
+    minQueryLength: config.minQueryLength,
+    profileTokenBudget: config.profileTokenBudget,
+    resumeContextBudget: config.resumeContextBudget,
+    commitTokenThreshold: config.commitTokenThreshold,
+    commitKeepRecentCount: config.commitKeepRecentCount,
+    captureToolResults: config.captureToolResults,
+    captureMode: config.captureMode,
+    captureMaxLength: config.captureMaxLength,
+    captureToolMaxChars: config.captureToolMaxChars,
+    captureAssistantTurns: config.captureAssistantTurns,
+    statusBar: {
+      ...priorStatusBar,
+      enabled: config.statusBar.enabled,
+      showSync: config.statusBar.showSync,
+      showTakeover: config.statusBar.showTakeover,
+      showInjection: config.statusBar.showInjection,
+      showSession: config.statusBar.showSession,
+    },
+    logLevel: config.logLevel,
+    takeover: {
+      ...priorTakeover,
+      enabled: config.takeoverEnabled,
+      tokenThreshold: config.takeoverTokenThreshold,
+      keepRecentTurns: config.takeoverKeepRecentTurns,
+      overviewBudget: config.takeoverOverviewBudget,
+    },
+  };
+
+  // Drop the legacy flat key once the nested object is authoritative.
+  delete next.statusBarEnabled;
+
+  try {
+    writeFileSync(configPath, JSON.stringify(next, null, 2) + "\n");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function saveConfigFromModuleUrl(moduleUrl: string, config: OVConfig): boolean {
+  return saveConfig(dirname(fileURLToPath(moduleUrl)), config);
 }
 
 export function loadConfig(extensionDir: string): OVConfig {
@@ -109,6 +202,7 @@ export function loadConfig(extensionDir: string): OVConfig {
   }
 
   const takeover = file.takeover && typeof file.takeover === "object" ? file.takeover : {};
+  const statusBarFile = file.statusBar && typeof file.statusBar === "object" ? file.statusBar : {};
   const creds = resolveOpenVikingCredentials();
   const config: OVConfig = {
     ...DEFAULT_CONFIG,
@@ -182,6 +276,14 @@ export function loadConfig(extensionDir: string): OVConfig {
   config.recallPeerScope = config.recallPeerScope === "actor" ? "actor" : "all";
   config.recallQueryExpansion = config.recallQueryExpansion === "off" ? "off" : "auto";
   config.recallLedger = config.recallLedger !== false;
+  // Nested statusBar block, with migration from the former flat statusBarEnabled key.
+  config.statusBar = {
+    enabled: statusBarFile.enabled ?? file.statusBarEnabled ?? DEFAULT_STATUS_BAR.enabled,
+    showSync: statusBarFile.showSync !== false,
+    showTakeover: statusBarFile.showTakeover !== false,
+    showInjection: statusBarFile.showInjection !== false,
+    showSession: statusBarFile.showSession !== false,
+  };
   if (!Array.isArray(config.bypassPatterns)) config.bypassPatterns = [];
   config.debugLogPath = typeof config.debugLogPath === "string" ? config.debugLogPath.trim() : "";
   config.peerId = resolveEffectivePeerId({ cfg: config as any, cwd: process.cwd() }).peerId;
