@@ -29,28 +29,40 @@ pi 的 reconcile 逻辑：`pi update`（含 `--extensions`/`--all`）触发时�
 
 ## 同步上游
 
-一次性配置：
+一次性配置（已完成，remote 已存在）：
 
 ```bash
 git remote add upstream https://github.com/volcengine/OpenViking.git
 ```
 
-以后每次同步（在安装克隆里，merge 完立刻 push）：
+⚠️ 不要用 `git merge -s subtree`：实测该策略会把本地自有文件
+（package.json / settings.ts / SYNC.md）直接删除、本地改动全部回退。
+正确方式：**graft 合并已完成**（历史已挂接上游，commit a9223db9），
+之后每次同步都是普通增量合并，**必须始终带 `-X subtree=`**：
 
 ```bash
-git fetch upstream main --depth 1
-git merge --allow-unrelated-histories -s subtree FETCH_HEAD
-# -s subtree 自动对齐：本仓库根 = 上游的 examples/pi-coding-agent-extension
+git fetch upstream main
+git merge -s ort -X subtree=examples/pi-coding-agent-extension upstream/main \
+  -m "merge: sync upstream OpenViking <short-sha>"
 git push
 ```
 
+冲突处理：自有文件（package.json / settings.ts / SYNC.md）永远不会接受
+上游版本，`git checkout --ours -- <file>` 后 `git add`；其余文件一般取
+本地版（本地树 = 最新上游 + 本地功能）。定期同步由 Hermes cron 执行
+`~/.hermes/scripts/sync_forks.sh`，冲突时自动 abort 并报警。
+
 ## 与上游的差异
 
-仅新增三个上游没有的文件（不会造成同步冲突）：
+在新增四个上游没有的文件之外，还有四个文件带本地功能改动：
 
 - `package.json` — pi 包清单（`pi.extensions` 指向 `./index.ts`）
+- `settings.ts` — 设置页（会话召回开关、footer 状态栏配置）
 - `.gitignore`
 - `SYNC.md` — 本文件
+
+另有本地改动的文件：`README.md`、`config.json`（statusBar 等）、
+`config.ts`、`index.ts`（settings 页接线、/viking 子命令补全）。
 
 ## 其他
 
