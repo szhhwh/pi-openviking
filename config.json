@@ -24,5 +24,15 @@
   "captureToolMaxChars": 1000000,
   "captureAssistantTurns": true,
   "bypassPatterns": [],
-  "logLevel": "error"
+  "logLevel": "error",
+  "recallLedger": true,
+  "recallPeerScope": "all",
+  "recallQueryExpansion": "auto",
+  "statusBar": {
+    "enabled": true,
+    "showSync": true,
+    "showTakeover": false,
+    "showInjection": true,
+    "showSession": false
+  }
 }
