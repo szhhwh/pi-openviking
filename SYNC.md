@@ -27,30 +27,33 @@ pi 的 reconcile 逻辑：`pi update`（含 `--extensions`/`--all`）触发时�
 2. 若从别处（网页编辑、其他机器）push 过新提交，先 `git pull` 再动手改
 3. merge/复杂操作做完立即 push，不要停留
 
-## 同步上游
+## 同步上游（diff/apply 内容同步，2026-09-09 起）
 
-一次性配置（已完成，remote 已存在）：
+⚠️ **禁止再用 `git merge -X subtree` 同步上游**：merge 会把上游 monorepo
+全部 2300+ 提交永久挂进本仓库历史（GitHub commits 页全是无关提交），
+且上游目录无变化时也会制造空转 merge。2026-09-09 已重建历史：
+剥离全部 merge，仅保留本地提交链（旧历史备份在 origin `backup/pre-rewrite` 分支，确认无误后可删）。
 
-```bash
-git remote add upstream https://github.com/volcengine/OpenViking.git
-```
-
-⚠️ 不要用 `git merge -s subtree`：实测该策略会把本地自有文件
-（package.json / settings.ts / SYNC.md）直接删除、本地改动全部回退。
-正确方式：**graft 合并已完成**（历史已挂接上游，commit a9223db9），
-之后每次同步都是普通增量合并，**必须始终带 `-X subtree=`**：
+现行机制：**只把上游 `examples/pi-coding-agent-extension` 子目录的内容变化
+作为一个 sync commit 落地**，不引入任何上游 commit 对象到历史：
 
 ```bash
-git fetch upstream main
-git merge -s ort -X subtree=examples/pi-coding-agent-extension upstream/main \
-  -m "merge: sync upstream OpenViking <short-sha>"
+# 已同步基线记录在 refs/synced/upstream-main（上游 tip 指针，本地引用）
+git fetch upstream main                       # 只拉 main，不拉其他分支
+git diff refs/synced/upstream-main:examples/pi-coding-agent-extension \
+        upstream/main:examples/pi-coding-agent-extension \
+  | git apply --3way --index -                # 本地功能改动参与三方合并
+git commit -m "sync: upstream OpenViking <full-sha> (N commits)"
 git push
+git update-ref refs/synced/upstream-main <full-sha>
 ```
 
-冲突处理：自有文件（package.json / settings.ts / SYNC.md）永远不会接受
-上游版本，`git checkout --ours -- <file>` 后 `git add`；其余文件一般取
-本地版（本地树 = 最新上游 + 本地功能）。定期同步由 Hermes cron 执行
-`~/.hermes/scripts/sync_forks.sh`，冲突时自动 abort 并报警。
+上游有新提交但扩展子目录无变化时，只推进基线引用、不产生提交。
+冲突处理：`git apply --3way` 失败即回滚报警，人工解决；自有文件
+（package.json / settings.ts / SYNC.md）冲突时永远取本地版。
+
+以上全部由 Hermes cron 每 6h 执行 `~/.hermes/scripts/sync_forks.sh`，
+失败自动回滚并推送飞书报警。
 
 ## 与上游的差异
 
@@ -68,6 +71,7 @@ git push
 
 - 行为配置：仓库内 `config.json`（随仓库走）；凭据在 `~/.openviking/ovcli.conf`
   或 `OPENVIKING_*` 环境变量（不受本仓库影响）
-- 上游基线 commit：`0c5147cae26aec8d6d93445ec6ad86d5faff4035`
-- 如需独立开发克隆：`git clone git@github.com:szhhwh/pi-openviking.git <dir>`
-  （记得重新 `git remote add upstream ...`，remote 配置不随仓库走）
+- 上游 fetch 配置：`remote.upstream.fetch = +refs/heads/main:refs/remotes/upstream/main`（仅 main，勿改回 `*`）
+- 已同步基线：`refs/synced/upstream-main`（本地引用，丢失时脚本会回退扫描
+  sync 提交信息里的 sha；都没有则需人工首次同步）
+- 历史重建前的旧历史备份：origin `backup/pre-rewrite` 分支
