@@ -190,8 +190,10 @@ export default async function (pi: ExtensionAPI) {
 
     // Keep recall synchronous with the provider request so the current prompt
     // still receives current-query memory, without blocking user-message UI.
+    // ctx.signal wires Esc to the retrieval chain: an abort cancels in-flight
+    // fetches (AbortSignal.any in OVClient) and skips injection for the turn.
     if (!recallDisabled) {
-      await recall.searchPending();
+      await recall.searchPending(ctx?.signal);
     }
 
     // The entry IDs are an optional optimization for replaying the recall

@@ -117,17 +117,32 @@ export class OVClient {
     return h;
   }
 
-  /** Core fetch wrapper. Returns { ok, result } after parsing OV's { status, result } envelope. */
-  async fetchJSON<T>(path: string, init?: RequestInit, timeoutMs = 10000): Promise<OVResponse<T>> {
+  /**
+   * Core fetch wrapper. Returns { ok, result } after parsing OV's { status, result } envelope.
+   *
+   * The internal timeout controller is combined with any caller-provided
+   * signal (e.g. the pi agent abort signal wired to Esc) via AbortSignal.any,
+   * so a user abort cancels the in-flight request immediately instead of
+   * waiting out the timer. Callers can detect the abort through
+   * `error.aborted` on the returned envelope.
+   */
+  async fetchJSON<T>(
+    path: string,
+    init?: RequestInit,
+    timeoutMs = 10000,
+    signal?: AbortSignal,
+  ): Promise<OVResponse<T>> {
+    const timeoutController = new AbortController();
+    const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
+    const requestSignal = signal
+      ? AbortSignal.any([signal, timeoutController.signal])
+      : timeoutController.signal;
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
       const resp = await fetch(`${this.baseUrl}${path}`, {
         ...init,
         headers: { ...this.headers(), ...(init?.headers as Record<string, string> || {}) },
-        signal: controller.signal,
+        signal: requestSignal,
       });
-      clearTimeout(timer);
       const body = await resp.json().catch(() => ({}));
       const traceId = body?.result?.trace_id || body?.error?.trace_id || body?.trace_id || undefined;
       if (!resp.ok || body.status === "error") {
@@ -141,7 +156,15 @@ export class OVClient {
       }
       return { ok: true, result: (body.result ?? body) as T, traceId };
     } catch (err: any) {
-      return { ok: false, result: null, status: 0, error: { message: err?.message || String(err) } };
+      const aborted = signal?.aborted === true || err?.name === "AbortError";
+      return {
+        ok: false,
+        result: null,
+        status: 0,
+        error: { message: err?.message || String(err), aborted },
+      };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -184,11 +207,11 @@ export class OVClient {
   }
 
   /** POST /api/v1/sessions/{id}/messages — add a message (simple text mode) */
-  async addMessage(sessionId: string, role: string, content: string): Promise<boolean> {
+  async addMessage(sessionId: string, role: string, content: string, signal?: AbortSignal): Promise<boolean> {
     const res = await this.fetchJSON<any>(
       `/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
       { method: "POST", body: JSON.stringify({ role, content }) },
-      10000,
+      10000, signal,
     );
     return res.ok;
   }
@@ -256,6 +279,7 @@ export class OVClient {
   async find(
     query: string,
     opts?: { targetUri?: string; topK?: number; scoreThreshold?: number },
+    signal?: AbortSignal,
   ): Promise<OVSearchResult[]> {
     const body: Record<string, unknown> = { query };
     if (opts?.targetUri) body.target_uri = opts.targetUri;
@@ -264,7 +288,7 @@ export class OVClient {
 
     const res = await this.fetchJSON<any>("/api/v1/search/find", {
       method: "POST", body: JSON.stringify(body),
-    }, 10000);
+    }, 10000, signal);
     if (!res.ok || !res.result) return [];
 
     // OV returns { memories: [...], resources: [...], skills: [...], total }
@@ -292,28 +316,28 @@ export class OVClient {
   // ========== Content ==========
 
   /** GET /api/v1/content/abstract — L0 summary */
-  async abstract(uri: string): Promise<string | null> {
+  async abstract(uri: string, signal?: AbortSignal): Promise<string | null> {
     const res = await this.fetchJSON<string>(
       `/api/v1/content/abstract?uri=${encodeURIComponent(uri)}`,
-      undefined, 10000,
+      undefined, 10000, signal,
     );
     return res.ok ? res.result : null;
   }
 
   /** GET /api/v1/content/overview — L1 overview (directories only) */
-  async overview(uri: string): Promise<string | null> {
+  async overview(uri: string, signal?: AbortSignal): Promise<string | null> {
     const res = await this.fetchJSON<string>(
       `/api/v1/content/overview?uri=${encodeURIComponent(uri)}`,
-      undefined, 10000,
+      undefined, 10000, signal,
     );
     return res.ok ? res.result : null;
   }
 
   /** GET /api/v1/content/read — L2 full content (files only) */
-  async readContent(uri: string): Promise<string | null> {
+  async readContent(uri: string, signal?: AbortSignal): Promise<string | null> {
     const res = await this.fetchJSON<string>(
       `/api/v1/content/read?uri=${encodeURIComponent(uri)}`,
-      undefined, 10000,
+      undefined, 10000, signal,
     );
     return res.ok ? res.result : null;
   }
@@ -321,10 +345,10 @@ export class OVClient {
   // ========== Filesystem ==========
 
   /** GET /api/v1/fs/ls — list directory */
-  async ls(uri: string): Promise<OVDirEntry[]> {
+  async ls(uri: string, signal?: AbortSignal): Promise<OVDirEntry[]> {
     const res = await this.fetchJSON<any[]>(
       `/api/v1/fs/ls?uri=${encodeURIComponent(uri)}`,
-      undefined, 10000,
+      undefined, 10000, signal,
     );
     if (!res.ok || !Array.isArray(res.result)) return [];
     return res.result.map(e => ({
@@ -339,20 +363,20 @@ export class OVClient {
   }
 
   /** GET /api/v1/fs/stat — file/directory metadata */
-  async stat(uri: string): Promise<OVStatInfo | null> {
+  async stat(uri: string, signal?: AbortSignal): Promise<OVStatInfo | null> {
     const res = await this.fetchJSON<OVStatInfo>(
       `/api/v1/fs/stat?uri=${encodeURIComponent(uri)}`,
-      undefined, 10000,
+      undefined, 10000, signal,
     );
     return res.ok ? res.result : null;
   }
 
   /** DELETE /api/v1/fs — remove file or directory */
-  async delete(uri: string, recursive = false): Promise<boolean> {
+  async delete(uri: string, recursive = false, signal?: AbortSignal): Promise<boolean> {
     const res = await this.fetchJSON<any>(
       `/api/v1/fs?uri=${encodeURIComponent(uri)}&recursive=${recursive}`,
       { method: "DELETE" },
-      10000,
+      10000, signal,
     );
     return res.ok;
   }
@@ -361,14 +385,14 @@ export class OVClient {
 
   /** POST /api/v1/resources — ingest a URL or file path */
   async addResource(
-    path: string, opts?: { to?: string },
+    path: string, opts?: { to?: string }, signal?: AbortSignal,
   ): Promise<{ root_uri: string } | null> {
     const body: Record<string, unknown> = { path };
     if (opts?.to) body.to = opts.to;
     const res = await this.fetchJSON<{ root_uri: string }>(
       "/api/v1/resources",
       { method: "POST", body: JSON.stringify(body) },
-      30000,
+      30000, signal,
     );
     return res.ok ? res.result : null;
   }

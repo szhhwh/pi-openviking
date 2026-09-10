@@ -21,7 +21,7 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
       limit: Type.Optional(Type.Number({ description: "Max results (default: 10)" })),
     }),
     async execute(
-      _id: string, params: any, _signal: AbortSignal,
+      _id: string, params: any, signal: AbortSignal,
       _onUpdate: any, _ctx: any,
     ) {
       if (!client.connected) {
@@ -30,7 +30,7 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
       const results = await client.find(params.query, {
         targetUri: params.scope,
         topK: params.limit ?? 10,
-      });
+      }, signal);
       if (results.length === 0) {
         return { content: [{ type: "text", text: "No results found." }] };
       }
@@ -59,7 +59,7 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
       level: StringEnum(["abstract", "overview", "full"] as const),
     }),
     async execute(
-      _id: string, params: any, _signal: AbortSignal,
+      _id: string, params: any, signal: AbortSignal,
       _onUpdate: any, _ctx: any,
     ) {
       if (!client.connected) {
@@ -67,9 +67,9 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
       }
       let content: string | null = null;
       switch (params.level) {
-        case "abstract": content = await client.abstract(params.uri); break;
-        case "overview": content = await client.overview(params.uri); break;
-        case "full":     content = await client.readContent(params.uri); break;
+        case "abstract": content = await client.abstract(params.uri, signal); break;
+        case "overview": content = await client.overview(params.uri, signal); break;
+        case "full":     content = await client.readContent(params.uri, signal); break;
       }
       if (!content) {
         return { content: [{ type: "text", text: `No content at ${params.uri}` }] };
@@ -89,7 +89,7 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
       uri: Type.Optional(Type.String({ description: "viking:// URI (default: 'viking://')" })),
     }),
     async execute(
-      _id: string, params: any, _signal: AbortSignal,
+      _id: string, params: any, signal: AbortSignal,
       _onUpdate: any, _ctx: any,
     ) {
       if (!client.connected) {
@@ -97,12 +97,12 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
       }
       const uri = params.uri ?? "viking://";
       if (params.action === "stat") {
-        const info = await client.stat(uri);
+        const info = await client.stat(uri, signal);
         if (!info) return { content: [{ type: "text", text: `Not found: ${uri}` }] };
         return { content: [{ type: "text", text: JSON.stringify(info, null, 2) }] };
       }
       // list
-      const entries = await client.ls(uri);
+      const entries = await client.ls(uri, signal);
       if (entries.length === 0) {
         return { content: [{ type: "text", text: `Empty directory: ${uri}` }] };
       }
@@ -126,7 +126,7 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
       category: Type.Optional(Type.String({ description: "Category hint: 'preference', 'entity', 'event', 'case', 'pattern'" })),
     }),
     async execute(
-      _id: string, params: any, _signal: AbortSignal,
+      _id: string, params: any, signal: AbortSignal,
       _onUpdate: any, _ctx: any,
     ) {
       if (!client.connected) {
@@ -139,7 +139,7 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
       // Directly add to OV session if available
       let stored = false;
       if (sync?.sessionId) {
-        stored = await client.addMessage(sync.sessionId, "user", tagged);
+        stored = await client.addMessage(sync.sessionId, "user", tagged, signal);
       }
 
       return {
@@ -160,22 +160,22 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
       query: Type.Optional(Type.String({ description: "Search query — deletes the strongest match if score > 0.8" })),
     }),
     async execute(
-      _id: string, params: any, _signal: AbortSignal,
+      _id: string, params: any, signal: AbortSignal,
       _onUpdate: any, _ctx: any,
     ) {
       if (!client.connected) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
       if (params.uri) {
-        const ok = await client.delete(params.uri);
+        const ok = await client.delete(params.uri, false, signal);
         return {
           content: [{ type: "text", text: ok ? `Deleted: ${params.uri}` : `Failed to delete: ${params.uri}` }],
         };
       }
       if (params.query) {
-        const results = await client.find(params.query, { topK: 1 });
+        const results = await client.find(params.query, { topK: 1 }, signal);
         if (results.length > 0 && results[0].score > 0.8) {
-          const ok = await client.delete(results[0].uri);
+          const ok = await client.delete(results[0].uri, false, signal);
           return {
             content: [{ type: "text", text: ok ? `Deleted: ${results[0].uri}` : `Failed: ${results[0].uri}` }],
           };
@@ -197,13 +197,13 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
       reason: Type.Optional(Type.String({ description: "Why this resource is relevant (improves indexing)" })),
     }),
     async execute(
-      _id: string, params: any, _signal: AbortSignal,
+      _id: string, params: any, signal: AbortSignal,
       _onUpdate: any, _ctx: any,
     ) {
       if (!client.connected) {
         return { content: [{ type: "text", text: "OpenViking server is not reachable." }] };
       }
-      const result = await client.addResource(params.url);
+      const result = await client.addResource(params.url, undefined, signal);
       if (!result) {
         return { content: [{ type: "text", text: `Failed to ingest: ${params.url}` }] };
       }
@@ -225,7 +225,7 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
       session_id: Type.Optional(Type.String({ description: "OV session ID to expand" })),
     }),
     async execute(
-      _id: string, params: any, _signal: AbortSignal,
+      _id: string, params: any, signal: AbortSignal,
       _onUpdate: any, _ctx: any,
     ) {
       if (!client.connected) {
@@ -237,10 +237,10 @@ export function registerTools(pi: any, client: OVClient, sync?: SyncManager): vo
       }
       // Read the session's overview — sessions are at viking://session/{sid}
       const uri = `viking://session/${sid}`;
-      const content = await client.overview(uri);
+      const content = await client.overview(uri, signal);
       if (!content) {
         // Try reading the history subdirectory
-        const history = await client.overview(`${uri}/history`);
+        const history = await client.overview(`${uri}/history`, signal);
         if (!history) {
           return { content: [{ type: "text", text: `Archive not found: ${sid}` }] };
         }

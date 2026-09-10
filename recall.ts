@@ -39,7 +39,13 @@ export class RecallManager {
     this.pendingPrompt = userQuery;
   }
 
-  async searchPending(): Promise<string | null> {
+  /**
+   * Run the queued retrieval. `signal` is the pi agent abort signal (Esc):
+   * when it fires mid-retrieval every underlying fetch is cancelled via
+   * AbortSignal.any in OVClient, and an already-aborted signal short-circuits
+   * before any request is made.
+   */
+  async searchPending(signal?: AbortSignal): Promise<string | null> {
     if (!this.pendingPrompt) return this.cache.block;
 
     const userQuery = this.pendingPrompt;
@@ -49,12 +55,26 @@ export class RecallManager {
       return null;
     }
 
+    // Esc short-circuit: the turn is already cancelled, so skip the retrieval
+    // chain entirely instead of racing fetches that would all abort anyway.
+    if (signal?.aborted) {
+      this.cache = { block: null, promptText: userQuery };
+      return null;
+    }
+
     const block = await buildRecallBlock(
       // 10s is this extension's own budget for a bare retrieval; when the
       // request also spends a server fuse the helper hands down a longer
       // deadline, and ignoring it would abort a request still inside its fuse.
+      // A fired signal short-circuits here too, so the fallback chain makes
+      // no further requests once the turn is cancelled.
       (path: string, init?: any, options?: any) =>
-        this.client.fetchJSON(path, init, options?.timeoutMs ?? 10000),
+        signal?.aborted
+          ? Promise.resolve({
+              ok: false, result: null, status: 0,
+              error: { message: "agent aborted", aborted: true },
+            })
+          : this.client.fetchJSON(path, init, options?.timeoutMs ?? 10000, signal),
       this.config as any,
       userQuery,
       {
