@@ -52,8 +52,44 @@ git update-ref refs/synced/upstream-main <full-sha>
 冲突处理：`git apply --3way` 失败即回滚报警，人工解决；自有文件
 （package.json / settings.ts / SYNC.md）冲突时永远取本地版。
 
+**部分克隆（2026-09-10 起）**：origin 和 upstream 均为 `blob:none` 部分克隆
+（`remote.<name>.promisor=true` + `partialclonefilter=blob:none`）。
+上游是 260MB+ 的 monorepo，全量 fetch 会把全部无关目录的对象灌进对象库
+（9/7 发现的问题）；blob:none 下增量 fetch 只进 commit/树元数据（KB 级），
+sync 时需要的子目录 blob 按需 lazy fetch（实测单次仅 KB~10KB 级）。
+`extensions.partialClone` 必须设置，否则 diff/apply 触发的 lazy fetch 会报错。
+注意：blob:none 只省**对象库**空间，历史与提交内容与全量克隆完全一致。
+
 以上全部由 Hermes cron 每 6h 执行 `~/.hermes/scripts/sync_forks.sh`，
 失败自动回滚并推送飞书报警。
+
+## 自愈（重克隆 / pi update 换新克隆后必做）
+
+重克隆会把以下 git 配置全部丢掉，cron 预检会发现并报警（不再误报成网络问题）。
+按顺序补回：
+
+```bash
+cd ~/.pi/agent/git/github.com/szhhwh/pi-openviking
+# 1. origin 转 https 部分克隆（push 保持 ssh）
+git remote set-url origin https://github.com/szhhwh/pi-openviking
+git config remote.origin.pushurl git@github.com:szhhwh/pi-openviking
+git config remote.origin.promisor true
+git config remote.origin.partialclonefilter blob:none
+git config extensions.partialClone origin
+# 2. upstream 补建 + 只拉 main + 部分克隆
+git remote add upstream https://github.com/volcengine/OpenViking.git
+git config remote.upstream.fetch "+refs/heads/main:refs/remotes/upstream/main"
+git config remote.upstream.promisor true
+git config remote.upstream.partialclonefilter blob:none
+# 3. 本仓库级 github 代理（lazy fetch / fetch 需走 mihomo）
+git config http.https://github.com/.proxy http://127.0.0.1:7890
+# 4. 恢复已同步基线（sha 取最近一条 sync 提交信息里的）
+git fetch origin main && git fetch upstream main
+git update-ref refs/synced/upstream-main <最近 sync 提交里的 full-sha>
+```
+
+基线引用 `refs/synced/upstream-main` 单独丢失时（remote 还在），只做第 4 步即可；
+脚本也会自动回退扫描 sync 提交信息里的 sha。
 
 ## 与上游的差异
 
@@ -72,6 +108,8 @@ git update-ref refs/synced/upstream-main <full-sha>
 - 行为配置：仓库内 `config.json`（随仓库走）；凭据在 `~/.openviking/ovcli.conf`
   或 `OPENVIKING_*` 环境变量（不受本仓库影响）
 - 上游 fetch 配置：`remote.upstream.fetch = +refs/heads/main:refs/remotes/upstream/main`（仅 main，勿改回 `*`）
+- 部分克隆配置：origin/upstream 均 `blob:none`（见上方「部分克隆」说明），勿删
+  `extensions.partialClone`，否则 sync 时的按需 blob 取回会直接失败
 - 已同步基线：`refs/synced/upstream-main`（本地引用，丢失时脚本会回退扫描
   sync 提交信息里的 sha；都没有则需人工首次同步）
 - 历史重建前的旧历史备份：origin `backup/pre-rewrite` 分支
