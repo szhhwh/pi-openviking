@@ -121,10 +121,11 @@ export class OVClient {
    * Core fetch wrapper. Returns { ok, result } after parsing OV's { status, result } envelope.
    *
    * The internal timeout controller is combined with any caller-provided
-   * signal (e.g. the pi agent abort signal wired to Esc) via AbortSignal.any,
-   * so a user abort cancels the in-flight request immediately instead of
-   * waiting out the timer. Callers can detect the abort through
-   * `error.aborted` on the returned envelope.
+   * signal (e.g. the pi agent abort signal wired to Esc) and a legacy
+   * init.signal via AbortSignal.any, so a user abort cancels the in-flight
+   * request immediately instead of waiting out the timer. On failure the
+   * envelope distinguishes the two causes: `error.aborted` marks a
+   * caller-requested abort, `error.timedOut` an internal timeout.
    */
   async fetchJSON<T>(
     path: string,
@@ -134,9 +135,10 @@ export class OVClient {
   ): Promise<OVResponse<T>> {
     const timeoutController = new AbortController();
     const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
-    const requestSignal = signal
-      ? AbortSignal.any([signal, timeoutController.signal])
-      : timeoutController.signal;
+    const signals: AbortSignal[] = [timeoutController.signal];
+    if (signal) signals.push(signal);
+    if (init?.signal) signals.push(init.signal);
+    const requestSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
     try {
       const resp = await fetch(`${this.baseUrl}${path}`, {
         ...init,
@@ -144,6 +146,14 @@ export class OVClient {
         signal: requestSignal,
       });
       const body = await resp.json().catch(() => ({}));
+      // An abort that lands mid-body-read surfaces as an empty JSON fallback;
+      // report it as a failure instead of a bogus empty result.
+      if (signal?.aborted) {
+        return {
+          ok: false, result: null, status: 0,
+          error: { message: "aborted while reading response body", aborted: true },
+        };
+      }
       const traceId = body?.result?.trace_id || body?.error?.trace_id || body?.trace_id || undefined;
       if (!resp.ok || body.status === "error") {
         return {
@@ -156,12 +166,16 @@ export class OVClient {
       }
       return { ok: true, result: (body.result ?? body) as T, traceId };
     } catch (err: any) {
-      const aborted = signal?.aborted === true || err?.name === "AbortError";
       return {
         ok: false,
         result: null,
         status: 0,
-        error: { message: err?.message || String(err), aborted },
+        error: {
+          message: err?.message || String(err),
+          // Distinguish the two abort sources: caller-requested vs timeout.
+          aborted: signal?.aborted === true,
+          timedOut: timeoutController.signal.aborted,
+        },
       };
     } finally {
       clearTimeout(timer);

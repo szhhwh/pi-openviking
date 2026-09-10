@@ -1,6 +1,15 @@
 // Abort semantics for the Esc-interrupt fix: the agent abort signal must
 // cancel in-flight retrieval fetches, short-circuit the fallback chain, and
 // leave the recall block empty for the cancelled turn.
+
+// Isolate recall-core's on-disk state (context-face memo, peer-scope memo,
+// digest cache) from the real ~/.openviking so fallback-chain shape does not
+// drift with machine state.
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+process.env.OPENVIKING_STATE_DIR = mkdtempSync(join(tmpdir(), "ov-abort-test-"));
+
 import assert from "node:assert/strict";
 import { OVClient } from "../client.ts";
 import { RecallManager } from "../recall.ts";
@@ -44,9 +53,10 @@ const client = new OVClient(cfg);
   const res = await client.fetchJSON("/health", undefined, 80);
   globalThis.fetch = realFetch;
   assert.equal(res.ok, false);
-  assert.equal(res.error.aborted, true, "timeout abort is also flagged");
+  assert.equal(res.error.aborted, false, "internal timeout is not a caller abort");
+  assert.equal(res.error.timedOut, true, "internal timeout is flagged as timedOut");
   assert.ok(sawSignal, "fetch must receive the combined timeout signal");
-  console.log("PASS 2: internal timeout still aborts and is flagged");
+  console.log("PASS 2: internal timeout still aborts, flagged timedOut (not aborted)");
 }
 
 // 3. searchPending: pre-aborted signal short-circuits, zero requests
@@ -113,7 +123,28 @@ const client = new OVClient(cfg);
   const dt = Date.now() - t0;
   assert.equal(block, null, "aborted recall yields no block");
   assert.ok(dt < 500, `mid-flight abort must return fast (took ${dt}ms)`);
-  console.log(`PASS 5: mid-flight abort returns in ${dt}ms instead of 30s`);
+  console.log("PASS 5: mid-flight abort returns in " + dt + "ms instead of 30s");
+}
+
+// 6. fetchJSON: abort landing mid-body-read surfaces as failure, not empty success
+{
+  const ctrl = new AbortController();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: () => new Promise((_res, rej) => {
+      ctrl.signal.addEventListener("abort", () =>
+        rej(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })));
+    }),
+  });
+  const t0 = Date.now();
+  const pending = client.fetchJSON("/api/v1/search/search", { method: "POST" }, 60000, ctrl.signal);
+  setTimeout(() => ctrl.abort(), 50);
+  const res = await pending;
+  globalThis.fetch = realFetch;
+  assert.equal(res.ok, false, "mid-body abort must not become a bogus ok envelope");
+  assert.equal(res.error.aborted, true);
+  console.log(`PASS 6: mid-body-read abort returns failure in ${Date.now() - t0}ms`);
 }
 
 console.log("\nAll abort-semantics checks passed.");
