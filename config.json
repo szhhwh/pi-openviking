@@ -7,7 +7,7 @@
   "scoreThreshold": 0.35,
   "minQueryLength": 3,
   "profileTokenBudget": 10000,
-  "resumeContextBudget": 32000,
+  "resumeContextBudget": 64000,
   "commitTokenThreshold": 20000,
   "commitKeepRecentCount": 10,
   "takeover": {
