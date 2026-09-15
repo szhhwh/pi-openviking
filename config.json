@@ -8,7 +8,7 @@
   "minQueryLength": 3,
   "profileTokenBudget": 10000,
   "resumeContextBudget": 64000,
-  "commitTokenThreshold": 20000,
+  "commitTokenThreshold": 50000,
   "commitKeepRecentCount": 10,
   "takeover": {
     "enabled": true,
