@@ -52,6 +52,14 @@ git update-ref refs/synced/upstream-main <full-sha>
 冲突处理：`git apply --3way` 失败即回滚报警，人工解决；自有文件
 （package.json / settings.ts / SYNC.md）冲突时永远取本地版。
 
+**shared/ 运行时副本（2026-09-16 起）**：上游 #4773 把各 harness 的
+`shared/` 运行时副本从 git 里去掉，改为打包时由
+`examples/memory-plugin-shared/sync.mjs` 从 `examples/memory-plugin-shared/lib`
+生成（.gitignore 也覆盖了它）。镜像仓库只装扩展子树、直接从 git 安装，
+没有打包步骤，所以镜像侧把生成产物提交进仓库：sync 时脚本检测共享库
+目录的变化，从上游 tip 整体重新生成 `shared/`（全部 .mjs，加 GENERATED
+头注释）并入同一个 sync commit。生成文件禁止手改。
+
 **部分克隆（2026-09-10 起）**：origin 和 upstream 均为 `blob:none` 部分克隆
 （`remote.<name>.promisor=true` + `partialclonefilter=blob:none`）。
 上游是 260MB+ 的 monorepo，全量 fetch 会把全部无关目录的对象灌进对象库
@@ -100,8 +108,15 @@ git update-ref refs/synced/upstream-main <最近 sync 提交里的 full-sha>
 - `.gitignore`
 - `SYNC.md` — 本文件
 
-另有本地改动的文件：`README.md`、`config.json`（statusBar 等）、
-`config.ts`、`index.ts`（settings 页接线、/viking 子命令补全）。
+另有本地改动的文件：`README.md`、`config.ts`（sidecar config.json 持久化 +
+statusBar；上游 2026-09-15 起删了 config.json 改走 ovcli.conf 分层，本地把
+sidecar 作为设置页持久化层保留在 `loadConfigFromModuleUrl`）、
+`client.ts`（fetchJSON 第 4 参数 AbortSignal：Esc 中断、aborted/timedOut
+归因，向上兼容上游新的 options 对象形态）、`index.ts`（settings 页接线、
+/viking 子命令补全）、`recall.ts`（searchPending 的 signal 短路）。
+
+`config.json` 现为运行时 sidecar（.gitignore 已忽略）：设置页把用户改动
+持久化到这里，启动时覆盖在标准分层之上。上游版本不含此文件。
 
 ## 其他
 

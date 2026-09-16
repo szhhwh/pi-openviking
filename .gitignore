@@ -1,3 +1,5 @@
 node_modules/
 *.log
 package-lock.json
+# 运行时 sidecar：设置页持久化（上游已不再携带 config.json）
+config.json
