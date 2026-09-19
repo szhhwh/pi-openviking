@@ -27,15 +27,11 @@ pi 的 reconcile 逻辑：`pi update`（含 `--extensions`/`--all`）触发时�
 2. 若从别处（网页编辑、其他机器）push 过新提交，先 `git pull` 再动手改
 3. merge/复杂操作做完立即 push，不要停留
 
-## 同步上游（diff/apply 内容同步，2026-09-09 起）
+## 同步上游（diff/apply 内容同步）
 
-⚠️ **禁止再用 `git merge -X subtree` 同步上游**：merge 会把上游 monorepo
-全部 2300+ 提交永久挂进本仓库历史（GitHub commits 页全是无关提交），
-且上游目录无变化时也会制造空转 merge。2026-09-09 已重建历史：
-剥离全部 merge，仅保留本地提交链（旧历史备份在 origin `backup/pre-rewrite` 分支，确认无误后可删）。
-
-现行机制：**只把上游 `examples/pi-coding-agent-extension` 子目录的内容变化
-作为一个 sync commit 落地**，不引入任何上游 commit 对象到历史：
+同步一律用 diff/apply，**禁止 merge 上游历史**（会把上游 monorepo 全部提交
+挂进本仓库历史）。只把上游 `examples/pi-coding-agent-extension` 子目录的
+内容变化作为一个 sync commit 落地，不引入任何上游 commit 对象：
 
 ```bash
 # 已同步基线记录在 refs/synced/upstream-main（上游 tip 指针，本地引用）
@@ -48,32 +44,30 @@ git push
 git update-ref refs/synced/upstream-main <full-sha>
 ```
 
-上游有新提交但扩展子目录无变化时，只推进基线引用、不产生提交。
-冲突处理：`git apply --3way` 失败即回滚报警，人工解决；自有文件
-（package.json / settings.ts / SYNC.md）冲突时永远取本地版。
+- 上游有新提交但扩展子目录（含 shared/、tests/support/ 的生成源）无变化时，
+  只推进基线引用、不产生提交。
+- 冲突处理：`git apply --3way` 失败即回滚报警，人工解决；自有文件
+  （package.json / settings.ts / SYNC.md）冲突时永远取本地版。
 
-**shared/ 运行时副本（2026-09-16 起）**：上游 #4773 把各 harness 的
-`shared/` 运行时副本从 git 里去掉，改为打包时由
-`examples/memory-plugin-shared/sync.mjs` 从 `examples/memory-plugin-shared/lib`
-生成（.gitignore 也覆盖了它）。镜像仓库只装扩展子树、直接从 git 安装，
-没有打包步骤，所以镜像侧把生成产物提交进仓库：sync 时脚本检测共享库
-目录的变化，从上游 tip 整体重新生成 `shared/`（全部 .mjs，加 GENERATED
-头注释）并入同一个 sync commit。生成文件禁止手改。
+**shared/ 运行时副本**：上游不提交各 harness 的 `shared/`，由
+`examples/memory-plugin-shared/lib` 在打包时生成。镜像仓库直接从 git 安装、
+没有打包步骤，所以 sync 时从上游 tip 整体重新生成 `shared/`（全部 .mjs，
+加 GENERATED 头注释）并入同一个 sync commit。生成文件禁止手改。
 
-**tests/support/ 测试支持（2026-09-19 起）**：`recall-deferred.test.mjs`
-在 monorepo 里用 `../../memory-plugin-shared/testing/support.mjs` 相对路径
-引用兄弟目录，镜像仓库里这个路径会逃出仓库根（曾导致在 git/github.com/ 下
-留一个非 git 的孤儿目录，进而让 pi update 守卫 fetch 失败连报 4 天）。
-sync 时同样从上游 tip 生成 `tests/support/*.mjs`（内部 `../lib/` 引用重写为
-`../../shared/`），并把测试的 import 改指向仓库内生成物。
+**tests/support/ 测试支持**：`recall-deferred.test.mjs` 在 monorepo 里用
+`../../memory-plugin-shared/testing/support.mjs` 相对路径引用兄弟目录，
+镜像仓库里该路径会逃出仓库根。sync 时从上游 tip 生成
+`tests/support/*.mjs`（内部 `../lib/` 引用重写为 `../../shared/`），并把
+测试的 import 改指向仓库内生成物。禁止在 git 安装克隆根目录
+（`~/.pi/agent/git/github.com/`）下留任何非 git 目录，否则 pi update 守卫
+fetch 失败会放弃整轮更新。
 
-**部分克隆（2026-09-10 起）**：origin 和 upstream 均为 `blob:none` 部分克隆
+**部分克隆**：origin 和 upstream 均为 `blob:none` 部分克隆
 （`remote.<name>.promisor=true` + `partialclonefilter=blob:none`）。
-上游是 260MB+ 的 monorepo，全量 fetch 会把全部无关目录的对象灌进对象库
-（9/7 发现的问题）；blob:none 下增量 fetch 只进 commit/树元数据（KB 级），
-sync 时需要的子目录 blob 按需 lazy fetch（实测单次仅 KB~10KB 级）。
-`extensions.partialClone` 必须设置，否则 diff/apply 触发的 lazy fetch 会报错。
-注意：blob:none 只省**对象库**空间，历史与提交内容与全量克隆完全一致。
+增量 fetch 只进 commit/树元数据（KB 级），sync 时需要的子目录 blob 按需
+lazy fetch（单次 KB~10KB 级）。`extensions.partialClone` 必须设置，否则
+diff/apply 触发的 lazy fetch 会报错。注意：blob:none 只省**对象库**空间，
+历史与提交内容与全量克隆完全一致。
 
 以上全部由 Hermes cron 每 6h 执行 `~/.hermes/scripts/sync_forks.sh`，
 失败自动回滚并推送飞书报警。
@@ -116,11 +110,11 @@ git update-ref refs/synced/upstream-main <最近 sync 提交里的 full-sha>
 - `SYNC.md` — 本文件
 
 另有本地改动的文件：`README.md`、`config.ts`（sidecar config.json 持久化 +
-statusBar；上游 2026-09-15 起删了 config.json 改走 ovcli.conf 分层，本地把
-sidecar 作为设置页持久化层保留在 `loadConfigFromModuleUrl`）、
-`client.ts`（fetchJSON 第 4 参数 AbortSignal：Esc 中断、aborted/timedOut
-归因，向上兼容上游新的 options 对象形态）、`index.ts`（settings 页接线、
-/viking 子命令补全）、`recall.ts`（searchPending 的 signal 短路）。
+statusBar；上游删了 config.json 改走 ovcli.conf 分层，本地把 sidecar 作为
+设置页持久化层保留在 `loadConfigFromModuleUrl`）、`client.ts`（fetchJSON
+第 4 参数 AbortSignal：Esc 中断、aborted/timedOut 归因，向上兼容上游新的
+options 对象形态）、`index.ts`（settings 页接线、/viking 子命令补全）、
+`recall.ts`（searchPending 的 signal 短路）。
 
 `config.json` 现为运行时 sidecar（.gitignore 已忽略）：设置页把用户改动
 持久化到这里，启动时覆盖在标准分层之上。上游版本不含此文件。
@@ -130,8 +124,7 @@ sidecar 作为设置页持久化层保留在 `loadConfigFromModuleUrl`）、
 - 行为配置：仓库内 `config.json`（随仓库走）；凭据在 `~/.openviking/ovcli.conf`
   或 `OPENVIKING_*` 环境变量（不受本仓库影响）
 - 上游 fetch 配置：`remote.upstream.fetch = +refs/heads/main:refs/remotes/upstream/main`（仅 main，勿改回 `*`）
-- 部分克隆配置：origin/upstream 均 `blob:none`（见上方「部分克隆」说明），勿删
+- 部分克隆配置：origin/upstream 均 `blob:none`（见「部分克隆」说明），勿删
   `extensions.partialClone`，否则 sync 时的按需 blob 取回会直接失败
 - 已同步基线：`refs/synced/upstream-main`（本地引用，丢失时脚本会回退扫描
   sync 提交信息里的 sha；都没有则需人工首次同步）
-- 历史重建前的旧历史备份：origin `backup/pre-rewrite` 分支
