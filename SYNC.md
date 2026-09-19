@@ -60,6 +60,13 @@ git update-ref refs/synced/upstream-main <full-sha>
 目录的变化，从上游 tip 整体重新生成 `shared/`（全部 .mjs，加 GENERATED
 头注释）并入同一个 sync commit。生成文件禁止手改。
 
+**tests/support/ 测试支持（2026-09-19 起）**：`recall-deferred.test.mjs`
+在 monorepo 里用 `../../memory-plugin-shared/testing/support.mjs` 相对路径
+引用兄弟目录，镜像仓库里这个路径会逃出仓库根（曾导致在 git/github.com/ 下
+留一个非 git 的孤儿目录，进而让 pi update 守卫 fetch 失败连报 4 天）。
+sync 时同样从上游 tip 生成 `tests/support/*.mjs`（内部 `../lib/` 引用重写为
+`../../shared/`），并把测试的 import 改指向仓库内生成物。
+
 **部分克隆（2026-09-10 起）**：origin 和 upstream 均为 `blob:none` 部分克隆
 （`remote.<name>.promisor=true` + `partialclonefilter=blob:none`）。
 上游是 260MB+ 的 monorepo，全量 fetch 会把全部无关目录的对象灌进对象库
