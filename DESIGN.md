@@ -25,6 +25,7 @@ pi-coding-agent-extension/
 ├── config.ts     # typed view over lib/pi-config.mjs
 ├── client.ts     # HTTP client for the OpenViking REST API
 ├── recall.ts     # per-prompt recall search and injection
+├── progress.ts   # footer + working-row elapsed-seconds feedback while the request waits on OV
 ├── sync.ts       # capture, delivery, pending queue, commit
 ├── takeover.ts   # binds the takeover state machine to pi
 ├── tools.ts      # the seven model-facing viking_* tools
@@ -65,6 +66,12 @@ The split between queueing and searching is what keeps recall off the UI path. `
 The search itself is `buildRecallBlock` from the shared `recall-core.mjs`; quotas, scopes, budgeting and formatting are shared with every other harness. The extension supplies three things of its own: the actor peer id, the legacy peer id (under `actor` scope the effective peer is the only one asked, so a workspace whose id changed would otherwise lose everything written before the change), and the OV session id, which is what turns on server-side query expansion and the cross-turn dedup ledger. A query shorter than `minQueryLength` skips the round trip entirely.
 
 Injection is two-pass, and that is the interesting part. Historical user messages get back the exact block the recall ledger says was sent with them; only the newest user message receives this turn's fresh block, which is then recorded. The result is a request prefix that stays byte-identical across turns, so the provider's prompt cache keeps hitting instead of being invalidated by every new memory. The ledger keys on pi's entry id plus the message's original text — entry ids survive compaction and branch navigation, where an ordinal would not. When the host does not expose entry ids the pass fails closed: fresh recall still reaches the newest message, but nothing historical is replayed or recorded under an unstable key. A message that already contains `<openviking-context` is never injected into twice.
+
+### progress.ts
+
+The two waits between "user pressed enter" and the provider request are startup (the memoized chain `before_agent_start` awaits on the first turn) and recall (each `context` hook with a queued prompt). Both used to be silent: the footer kept its previous numbers and the working row said only "Working", so a slow server looked frozen.
+
+`RecallProgress` owns one live phase (`connect` or `recall`, with re-entrant holders), sets the working-row message to the elapsed seconds (the row's own spinner carries the activity), and refreshes once a second so the footer shows a clock glyph plus the same seconds. `searchPending` takes optional `onStart`/`onEnd` hooks: `onStart` fires after every short-circuit (recall disabled, query below `minQueryLength`, turn already aborted), so progress never announces a request that is not made, and `onEnd` fires from a `finally`. The `connect` phase never downgrades a live `recall`, and a shutdown disposes the ticker and restores pi's default working message.
 
 ### sync.ts
 
@@ -173,7 +180,7 @@ The entry point. It loads the config, constructs the modules, and registers hand
 |---|---|
 | `session_start` | Kick off startup without awaiting it |
 | `before_agent_start` | Await startup, queue the prompt for recall, compose system-prompt additions |
-| `context` | Run the pending recall, apply the takeover transform, inject recall |
+| `context` | Run the pending recall (progress hooks + injection), apply the takeover transform, inject recall |
 | `tool_call` | Redirect host file tools that were handed a `viking://` URI |
 | `tool_result` | Append a notice to a `bash` result whose command carried a `viking://` URI |
 | `turn_end` | Sync the branch, feed the token estimate to takeover, update the status line |
@@ -189,7 +196,7 @@ The entry point. It loads the config, constructs the modules, and registers hand
 
 **Tool guard.** `guardVikingUriToolCall` (`lib/uri-guard-adapter.mjs`) watches for a `viking://` URI handed as a path to a host file tool that cannot read one — `read`, `grep`, `find`, `ls` — and blocks the call with the equivalent `viking_*` invocation spelled out. Without it the model burns turns on a file path that does not exist on disk. A grep `pattern` is search text, not a path, so grepping a local tree for `viking://` is not blocked. `bash` is not blocked either: a URI in a command is as often data (an `ov` argument, an HTTP payload, a search pattern) as a path the model hoped to open. The command runs, and on `tool_result` `noticeVikingUriToolResult` appends a text block to its output that names `viking_read` / `viking_search` and tells the model to ignore the notice when the URI was intentional.
 
-**Surface.** The footer has one density knob (`statusBarLevel`: hidden, minimal, standard, verbose). Each visible segment has exactly one meaning: `⇅n` is the sync watermark, `c/l` is takeover coverage, and the token pair is pressure against whichever threshold currently applies — takeover's counter while takeover owns the boundary, the server's `pending_tokens` otherwise. `/viking` opens the panel; *commit now* forces a flush and commit, which under takeover also advances the boundary.
+**Surface.** The footer has one density knob (`statusBarLevel`: hidden, minimal, standard, verbose). Each visible segment has exactly one meaning: `⇅n` is the sync watermark, `c/l` is takeover coverage, and the token pair is pressure against whichever threshold currently applies — takeover's counter while takeover owns the boundary, the server's `pending_tokens` otherwise. While a request waits on OpenViking, a transient `⟳ 2s` segment leads the row (in every density except `hidden`) and the working row shows its spinner with the same seconds. `/viking` opens the panel; *commit now* forces a flush and commit, which under takeover also advances the boundary.
 
 ### settings.ts
 

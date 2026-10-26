@@ -8,6 +8,17 @@ export interface RecallCache {
   promptText: string;      // the query this cache is for
 }
 
+/**
+ * Lifecycle hooks around a real retrieval. `onStart` fires only after every
+ * short-circuit (recall disabled, query too short, already aborted), so the UI
+ * never announces a request that is not made. `onEnd` always fires in a
+ * `finally`, including aborts and failed fallback chains.
+ */
+export interface RecallHooks {
+  onStart?: () => void;
+  onEnd?: () => void;
+}
+
 export class RecallManager {
   private client: OVClient;
   private config: OVConfig;
@@ -45,7 +56,10 @@ export class RecallManager {
    * AbortSignal.any in OVClient, and an already-aborted signal short-circuits
    * before any request is made.
    */
-  async searchPending(signal?: AbortSignal): Promise<string | null> {
+  async searchPending(
+    signal?: AbortSignal,
+    hooks?: RecallHooks,
+  ): Promise<string | null> {
     if (!this.pendingPrompt) return this.cache.block;
 
     const userQuery = this.pendingPrompt;
@@ -66,33 +80,38 @@ export class RecallManager {
       return null;
     }
 
-    const block = await buildRecallBlock(
-      // 10s is this extension's own budget for a bare retrieval; when the
-      // request also spends a server fuse the helper hands down a longer
-      // deadline, and ignoring it would abort a request still inside its fuse.
-      // A fired signal short-circuits here too, so the fallback chain makes
-      // no further requests once the turn is cancelled.
-      (path: string, init?: any, options?: any) =>
-        signal?.aborted
-          ? Promise.resolve({
-              ok: false, result: null, status: 0,
-              error: { message: "agent aborted", aborted: true },
-            })
-          : this.client.fetchJSON(path, init, options, signal),
-      this.config,
-      userQuery,
-      {
-        actorPeerId: this.config.peerId,
-        // Under `actor` scope the effective peer is the only one asked, so a
-        // workspace whose id changed would lose everything written before it.
-        legacyPeerId: this.config.legacyPeerId,
-        // Passing the OV session id is what turns on server-side query
-        // expansion and the cross-turn dedup ledger.
-        sessionId: this.sessionId() ?? "",
-      },
-    );
-    this.cache = { block, promptText: userQuery };
-    return block;
+    hooks?.onStart?.();
+    try {
+      const block = await buildRecallBlock(
+        // 10s is this extension's own budget for a bare retrieval; when the
+        // request also spends a server fuse the helper hands down a longer
+        // deadline, and ignoring it would abort a request still inside its fuse.
+        // A fired signal short-circuits here too, so the fallback chain makes
+        // no further requests once the turn is cancelled.
+        (path: string, init?: any, options?: any) =>
+          signal?.aborted
+            ? Promise.resolve({
+                ok: false, result: null, status: 0,
+                error: { message: "agent aborted", aborted: true },
+              })
+            : this.client.fetchJSON(path, init, options, signal),
+        this.config,
+        userQuery,
+        {
+          actorPeerId: this.config.peerId,
+          // Under `actor` scope the effective peer is the only one asked, so a
+          // workspace whose id changed would lose everything written before it.
+          legacyPeerId: this.config.legacyPeerId,
+          // Passing the OV session id is what turns on server-side query
+          // expansion and the cross-turn dedup ledger.
+          sessionId: this.sessionId() ?? "",
+        },
+      );
+      this.cache = { block, promptText: userQuery };
+      return block;
+    } finally {
+      hooks?.onEnd?.();
+    }
   }
 
   // --- Injection ---

@@ -18,6 +18,7 @@ import { OVClient } from "./client.js";
 import type { OvHttpRequestOptions } from "./client.js";
 import { RecallManager } from "./recall.js";
 import { RecallLedger } from "./lib/recall-ledger.mjs";
+import { RecallProgress, formatElapsed } from "./progress.js";
 import { SyncManager } from "./sync.js";
 import { buildProfileBlock } from "./shared/profile-inject.mjs";
 import { isBypassed } from "./shared/session-model.mjs";
@@ -72,6 +73,20 @@ export default async function (pi: ExtensionAPI) {
     pendingTokens: config.takeoverEnabled ? takeover.state.pendingTokens : sync.pendingTokens,
   });
 
+  // Live progress for the two waits that sit between "user pressed enter" and
+  // the provider request: the first-turn startup chain and each recall search.
+  // The reporter refreshes the footer and the working-row message, so a slow
+  // server never looks like a frozen prompt.
+  const progress = new RecallProgress((_snapshot, ctx) => {
+    if (ctx) refreshStatus(ctx);
+  });
+
+  const refreshStatus = (ctx: any) =>
+    updateStatus(
+      ctx, connected, sync.syncedCount, sync.sessionId, config,
+      statusState(), recallDisabled, progress.snapshot(),
+    );
+
   // ================================================================
   // Event Handlers
   // ================================================================
@@ -122,7 +137,7 @@ export default async function (pi: ExtensionAPI) {
         registerTools(pi, client, sync);
         toolsRegistered = true;
       }
-      updateStatus(ctx, connected, sync.syncedCount, sync.sessionId, config, statusState(), recallDisabled);
+      updateStatus(ctx, connected, sync.syncedCount, sync.sessionId, config, statusState(), recallDisabled, progress.snapshot());
 
       started = true;
       if (config.logLevel === "info") {
@@ -156,8 +171,16 @@ export default async function (pi: ExtensionAPI) {
 
   // --- before_agent_start ---
   pi.on("before_agent_start", async (event, ctx) => {
-    // session_start doesn't fire for pi -c continuations.
-    await start(ctx);
+    // session_start doesn't fire for pi -c continuations. The first turn also
+    // awaits the startup chain; report it while the working row cannot yet.
+    // A bypassed workspace gets no OpenViking feedback even though startup runs.
+    const showStartupProgress = !started && !bypassedNow();
+    if (showStartupProgress) progress.begin(ctx, "connect");
+    try {
+      await start(ctx);
+    } finally {
+      if (showStartupProgress) progress.end("connect");
+    }
 
     if (!connected || bypassedNow()) return;
 
@@ -201,7 +224,10 @@ export default async function (pi: ExtensionAPI) {
     // ctx.signal wires Esc to the retrieval chain: an abort cancels in-flight
     // fetches (AbortSignal.any in OVClient) and skips injection for the turn.
     if (!recallDisabled) {
-      await recall.searchPending(ctx?.signal);
+      await recall.searchPending(ctx?.signal, {
+        onStart: () => progress.begin(ctx, "recall"),
+        onEnd: () => progress.end("recall"),
+      });
     }
 
     // The entry IDs are an optional optimization for replaying the recall
@@ -270,7 +296,7 @@ export default async function (pi: ExtensionAPI) {
     const result = await sync.syncBranch(branch);
     logger.log("turn_end", { added: result.added, tokens: result.tokens });
     await takeover.onTurnSynced(result.tokens);
-    updateStatus(ctx, connected, sync.syncedCount, sync.sessionId, config, statusState(), recallDisabled);
+    refreshStatus(ctx);
   });
 
   // --- session_before_compact ---
@@ -299,6 +325,7 @@ export default async function (pi: ExtensionAPI) {
 
   // --- session_shutdown ---
   pi.on("session_shutdown", async (_event, ctx) => {
+    progress.dispose();
     if (!connected || bypassedNow()) return;
 
     await sync.shutdown();
@@ -317,9 +344,6 @@ export default async function (pi: ExtensionAPI) {
   // ================================================================
   // Commands
   // ================================================================
-
-  const refreshStatus = (ctx: any) =>
-    updateStatus(ctx, connected, sync.syncedCount, sync.sessionId, config, statusState(), recallDisabled);
 
   const commitNow = async (): Promise<{ ok: boolean; detail?: string }> => {
     if (!connected) return { ok: false, detail: "not connected" };
@@ -492,6 +516,7 @@ export function updateStatus(
   config: OVConfig,
   takeoverState?: { pendingTokens?: number; coveredUserTurns?: number; lastSeenUserTurns?: number },
   recallDisabled = false,
+  progress?: { phase: "connect" | "recall"; elapsedMs: number } | null,
 ): void {
   const setter = ctx?.ui?.setStatus;
   if (typeof setter !== "function") return;
@@ -515,6 +540,15 @@ export function updateStatus(
       : config.commitTokenThreshold;
     const pressure = takeoverState?.pendingTokens ?? 0;
     const near = threshold > 0 && pressure >= threshold * 0.8;
+
+    // Live request-path progress: the only segment that moves while the
+    // prompt is waiting on OpenViking rather than on the model.
+    if (progress) {
+      parts.push(
+        statusColor("accent", "⟳ ") +
+          statusColor("dim", formatElapsed(progress.elapsedMs)),
+      );
+    }
 
     if (level === "minimal") {
       if (recallDisabled) parts.push(statusColor("warning", "⏸"));

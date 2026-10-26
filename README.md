@@ -105,7 +105,7 @@ Recall defaults to the broad mode: global memory, the current workspace, and oth
 pi
 ```
 
-The extension adds its segment to pi's footer and registers the `viking_*` tools on startup. Memories persist across sessions — no additional setup.
+The extension adds its segment to pi's footer and registers the `viking_*` tools on startup. While a submitted prompt is waiting on OpenViking — the first-turn startup chain or a recall search — the footer shows a clock glyph and elapsed seconds, and the working row shows its spinner with the same seconds, so a slow server never looks like a frozen prompt. Memories persist across sessions — no additional setup.
 
 ## Configuration Reference
 
@@ -302,6 +302,13 @@ standard   OV ● ⇅340 · 3/6 · 18k/30k        (takeover on)
 verbose    OV ● ⇅340 · ctx 3/6 · 18k/30k · ⏸inj · pi-0f3a9…
 ```
 
+While a request waits on OpenViking, a transient `⟳ 2s` segment leads the row (the clock glyph plus elapsed seconds) and the working row shows its spinner with the same seconds, so the wait is visibly progressing rather than hung:
+
+```
+connecting   OV ● ⟳ 1s · ⇅340 · 18k/20k        ⠋ 1s
+recalling    OV ● ⟳ 3s · ⇅340 · 18k/20k        ⠋ 3s
+```
+
 | Segment      | Meaning                                                                          |
 |--------------|----------------------------------------------------------------------------------|
 | `OV ●` / `OV ○` | Connection state (green/red)                                                  |
@@ -309,9 +316,10 @@ verbose    OV ● ⇅340 · ctx 3/6 · 18k/30k · ⏸inj · pi-0f3a9…
 | `c/l`        | Takeover coverage: covered/seen user turns (only while takeover is on)            |
 | `18k/30k`    | Token pressure vs the threshold that currently applies — takeover when on, commit when off |
 | `⏸inj`       | Context injection paused for this session                                        |
+| `⟳ 3s`       | Live request-path progress: startup chain on the first turn, recall retrieval before each request (transient; clock glyph plus seconds) |
 | `pi-0f3a9…`  | OpenViking session id (verbose only)                                             |
 
-`minimal` keeps the connection dot and shows only anomalies: `⏸` for a paused injection and `⚠` when pressure reaches 80% of the threshold. Empty segments are omitted, token counts are humanized, and colors follow the active pi theme.
+`minimal` keeps the connection dot and the transient progress segment, and shows only anomalies otherwise: `⏸` for a paused injection and `⚠` when pressure reaches 80% of the threshold. Empty segments are omitted, token counts are humanized, and colors follow the active pi theme.
 
 ## Compared to Pi's Built-in Memory
 
