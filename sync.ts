@@ -7,6 +7,30 @@ import { BATCH_LIMIT, sendSessionMessages } from "./shared/batch-send.mjs";
 import { extractBranchCapturePayloads } from "./lib/capture-adapter.mjs";
 import { countUndeliveredForSession, estimatePayloadTokens } from "./lib/takeover-core.mjs";
 
+type BatchSendOptions = {
+  enqueueOnRetryable?: boolean;
+  onSent?: (count: number) => void | Promise<void>;
+};
+type BatchSendResult = {
+  sent: number;
+  queued: number;
+  enqueueFailed: number;
+  failed: number;
+  retryable: boolean;
+  lastError?: any;
+};
+
+/**
+ * `shared/batch-send.mjs` is plain JS, so TS infers `opts` from whichever
+ * property each call site passes. Type the boundary here instead.
+ */
+const sendBatch = sendSessionMessages as unknown as (
+  fetchJSON: (path: string, init?: any, options?: any) => Promise<any>,
+  sessionId: string,
+  payloads: any[],
+  opts?: BatchSendOptions,
+) => Promise<BatchSendResult>;
+
 // --- SyncManager ---
 
 export interface AddPayloadResult {
@@ -117,7 +141,7 @@ export class SyncManager {
       batches += 1;
 
       let delivered = 0;
-      await sendSessionMessages(
+      await sendBatch(
         this.fetchJSON,
         sid,
         claimed.map(({ entry }) => entry.payload),
@@ -178,7 +202,7 @@ export class SyncManager {
    */
   private async sendPayloads(payloads: any[]): Promise<{ accepted: number; delivered: number }> {
     if (!this.ovSessionId || payloads.length === 0) return { accepted: 0, delivered: 0 };
-    const res = await sendSessionMessages(this.fetchJSON, this.ovSessionId, payloads, {
+    const res = await sendBatch(this.fetchJSON, this.ovSessionId, payloads, {
       enqueueOnRetryable: true,
     });
     if (res.failed > 0 || res.enqueueFailed > 0) {

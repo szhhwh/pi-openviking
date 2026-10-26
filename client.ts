@@ -1,5 +1,4 @@
 import type { OVConfig } from "./config.js";
-import type { OvHttpRequestOptions } from "./shared/ov-http.mjs";
 import { createOvHttp } from "./shared/ov-http.mjs";
 
 // --- OV API Response Shapes ---
@@ -84,8 +83,30 @@ export interface OVResponse<T> {
   traceId?: string;
 }
 
+/** Third argument accepted by the shared `fetchJSON` closure. */
+export interface OvHttpRequestOptions {
+  timeoutMs?: number;
+  actorPeerId?: string;
+}
+
+type FetchJSON = (
+  path: string,
+  init?: RequestInit,
+  options?: OvHttpRequestOptions,
+) => Promise<OVResponse<any>>;
+
+/**
+ * `createOvHttp` is plain JS, so TypeScript widens its default callback to
+ * `() => ""` and its `options = {}` parameter to `{}`. Type the boundary once
+ * here instead of casting at every call site.
+ */
+const createHttp = createOvHttp as unknown as (
+  cfg: any,
+  options: { defaultTimeoutMs?: number; resolveActorPeerId?: () => string },
+) => FetchJSON;
+
 export class OVClient {
-  private http: ReturnType<typeof createOvHttp>;
+  private http: FetchJSON;
   connected: boolean = false;
 
   /** Read-only access to config (for value access across modules). */
@@ -93,7 +114,7 @@ export class OVClient {
 
   constructor(config: OVConfig) {
     this.cfg = config;
-    this.http = createOvHttp(
+    this.http = createHttp(
       { ...config, baseUrl: config.endpoint.replace(/\/+$/, "") },
       { defaultTimeoutMs: 10000, resolveActorPeerId: () => config.peerId },
     );
@@ -112,7 +133,7 @@ export class OVClient {
   async fetchJSON<T>(
     path: string,
     init?: RequestInit,
-    options?: OvHttpRequestOptions | { timeoutMs?: number } | number,
+    options?: OvHttpRequestOptions | number,
     signal?: AbortSignal,
   ): Promise<OVResponse<T>> {
     // Legacy call shape: fetchJSON(path, init, timeoutMs, signal).
@@ -127,7 +148,7 @@ export class OVClient {
     if (signal) signals.push(signal);
     if (init?.signal) signals.push(init.signal);
     if (signals.length === 0) {
-      return reclassifyTimeout(await this.http(path, init, options as OvHttpRequestOptions));
+      return reclassifyTimeout(await this.http(path, init, options));
     }
 
     // The shared http layer owns the controller and overrides init.signal, so
@@ -138,7 +159,7 @@ export class OVClient {
     let abortedExternally = requestSignal.aborted;
     const onAbort = () => { abortedExternally = true; };
     requestSignal.addEventListener("abort", onAbort, { once: true });
-    const httpPromise = this.http(path, init, options as OvHttpRequestOptions);
+    const httpPromise = this.http(path, init, options);
     // A request still in flight when the race is won must not crash the
     // process later as an unhandled rejection.
     httpPromise.catch(() => {});
@@ -194,11 +215,17 @@ export class OVClient {
   }
 
   /** POST /api/v1/sessions/{id}/messages — add a message (simple text mode) */
-  async addMessage(sessionId: string, role: string, content: string): Promise<boolean> {
+  async addMessage(
+    sessionId: string,
+    role: string,
+    content: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
     const res = await this.fetchJSON<any>(
       `/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
       { method: "POST", body: JSON.stringify({ role, content }) },
       { timeoutMs: 10000 },
+      signal,
     );
     return res.ok;
   }

@@ -15,6 +15,7 @@ import { createDynamicLogger } from "./lib/dynamic-logger.mjs";
 import { loadEffectiveConfig, saveConfig, type OVConfig } from "./config.js";
 import { listPending } from "./shared/pending-queue.mjs";
 import { OVClient } from "./client.js";
+import type { OvHttpRequestOptions } from "./client.js";
 import { RecallManager } from "./recall.js";
 import { RecallLedger } from "./lib/recall-ledger.mjs";
 import { SyncManager } from "./sync.js";
@@ -162,8 +163,15 @@ export default async function (pi: ExtensionAPI) {
 
     // Queue recall for the context hook. Pi renders the user message before
     // that hook, so recall latency does not delay the message appearing.
-    if (!recallDisabled) {
-      recall.queueSearch(event.prompt);
+    // Custom messages also start a run; take their text so recall sees the
+    // same prompt the agent does.
+    const prompt = event.messageType === "user"
+      ? event.prompt
+      : typeof event.message.content === "string"
+        ? event.message.content
+        : event.message.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+    if (!recallDisabled && prompt) {
+      recall.queueSearch(prompt);
     }
 
     // Compose system prompt additions
@@ -385,7 +393,8 @@ async function buildSessionProfileBlock(
 ): Promise<string> {
   try {
     const profile = await buildProfileBlock(
-      (path, init, options) => client.fetchJSON(path, init, options),
+      (path: string, init?: RequestInit, options?: OvHttpRequestOptions) =>
+        client.fetchJSON(path, init, options),
       config.profileTokenBudget,
       config.peerId,
     );
