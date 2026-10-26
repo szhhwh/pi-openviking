@@ -14,7 +14,7 @@ Three earlier OpenViking integrations shaped this one. OpenClaw contributed sync
 | Injection point | user message | user message | user message | `context` hook, newest user message |
 | Commit trigger | session end | token threshold | threshold + pre-compact + session end | threshold + pre-compact + session end |
 | Capture sanitization | none | its own recall block | every injected block | shared `capture-utils` |
-| Committed history | owned by the agent | replaced by OV archives | owned by the agent | replaced by OV archives (default on) |
+| Committed history | owned by the agent | replaced by OV archives | owned by the agent | replaced by OV archives (pi default off) |
 
 What the Claude Code plugin proved is no longer copied here — it is imported. `shared/` is a generated copy of `examples/memory-plugin-shared/lib`, produced by that directory's `sync.mjs`. Recall assembly, capture sanitization, profile building, the disk pending queue, batched sending, credential and settings resolution, and bypass matching all live there and behave identically in every harness. What stays local is the pi-shaped part: how a pi branch becomes capture payloads, how the `context` hook is rewritten, and how state survives `pi -c`.
 
@@ -22,17 +22,19 @@ What the Claude Code plugin proved is no longer copied here — it is imported. 
 
 ```
 pi-coding-agent-extension/
-├── config.ts     # settings, credentials, peer resolution
+├── config.ts     # typed view over lib/pi-config.mjs
 ├── client.ts     # HTTP client for the OpenViking REST API
 ├── recall.ts     # per-prompt recall search and injection
 ├── sync.ts       # capture, delivery, pending queue, commit
 ├── takeover.ts   # binds the takeover state machine to pi
 ├── tools.ts      # the seven model-facing viking_* tools
+├── settings.ts   # the /viking panel: sections, diagnostics, doctor pager
 ├── index.ts      # entry point: event handlers and the /viking command
 ├── package.json  # name and version; pi loads index.ts regardless
 ├── lib/          # pi-specific logic kept out of the event handlers
+│                 #   pi-config.mjs also backs scripts/doctor.mjs
 ├── shared/       # generated copy of memory-plugin-shared/lib
-├── scripts/      # live e2e harness
+├── scripts/      # live e2e harness and the full doctor entry
 └── tests/        # node --test suites
 ```
 
@@ -40,11 +42,11 @@ pi-coding-agent-extension/
 
 ### config.ts
 
-Defines `OVConfig` and resolves it once at load time. Knobs come from `resolveSettings("pi", { cwd })`: every one of them is declared in `shared/config-schema.mjs` and resolved through the same layers as every other harness — environment, the workspace's `.openviking/config.json` and machine registry entry, `ovcli.conf`'s `plugin.pi`, `ovcli.conf`'s `plugin`, then the schema default. The extension has no configuration file of its own. It used to ship one holding exactly the code defaults, which made an operator's choice indistinguishable from a factory setting.
+Defines `OVConfig` and resolves it once at load time. Knobs come from `resolveSettings("pi", { cwd })`: every one except the panel-only `statusBarLevel` is declared in `shared/config-schema.mjs` and resolved through the same layers as every other harness — environment, the workspace's `.openviking/config.json` and machine registry entry, `ovcli.conf`'s `plugin.pi`, `ovcli.conf`'s `plugin`, then the schema default. The panel writes its choices to `~/.openviking/pi-settings.json`, outside the install checkout so `pi update`'s `git clean -fdx` cannot delete them. That file is an allowlisted projection of the panel's settings, not a second config layer: unknown keys are ignored, credential fields are never read or written, and only the keys the panel changed are added. `enabled` is not part of the panel or the projection — a switch that hides the surface used to turn it back on is a trap, so the resolved config no longer carries it for `isCaptureEnabled` to read.
 
 Credentials — server URL, API key, account, user — and the auth mode that gates whether identity headers go on the wire at all come from `resolveConnection("pi")`, the one connection resolver every harness's hooks and MCP proxy share. The peer identity is resolved twice on purpose: `resolvePluginPeerId` picks the id from the configured layers, then `resolveEffectivePeerId` maps it onto the workspace and also returns `legacyPeerId`, the pre-git workspace id that recall still has to reach.
 
-Two older spellings are kept alive because setups depend on them: `bypassPatterns` holds the same list as the shared `bypassSessionPatterns`, and `OV_DEBUG_LOG` is read alongside the shared `OPENVIKING_DEBUG_LOG`. `EXTENSION_VERSION` reads `package.json`, the same manifest the release gate watches for a bump, and feeds the shared `User-Agent` builder.
+Pi overrides one shared default: `takeoverEnabled` falls back to `false` unless a layer set it, while the schema ships `true` for the harnesses that delivered takeover first. `EXTENSION_VERSION` reads `package.json`, the same manifest the release gate watches for a bump, and feeds the shared `User-Agent` builder.
 
 ### client.ts
 
@@ -139,7 +141,7 @@ If any step fails the handler returns nothing and pi's default compaction runs. 
 | Health check fails | Extension stays disconnected; pi runs normally |
 | Pending `addMessage` replay incomplete | Barrier stays closed, boundary is not advanced, full local history remains visible |
 | Commit fails | Boundary is not advanced; pending token pressure is retained |
-| Overview not ready | Boundary is not advanced; retried at the next threshold or by `/viking commit` |
+| Overview not ready | Boundary is not advanced; retried at the next threshold or by *commit now* in `/viking` |
 | Branch fingerprint mismatch | Boundary resets to 0 and full history is shown until the next successful advance |
 | Compaction takeover fails | Returns nothing; pi's default compaction proceeds |
 
@@ -165,7 +167,7 @@ Two of them are less direct than they look. `viking_remember` does not write a m
 
 ### index.ts
 
-The entry point. It loads the config, returns immediately when disabled, constructs the modules, and registers handlers.
+The entry point. It loads the config, constructs the modules, and registers handlers.
 
 | Event | Action |
 |---|---|
@@ -179,7 +181,7 @@ The entry point. It loads the config, returns immediately when disabled, constru
 | `session_shutdown` | Persist takeover state, or a final commit |
 | `agent_end` | Invalidate the recall cache |
 
-**Two guards.** The bypass check runs the shared `isBypassed` against the cwd, so a scratch directory never pollutes long-term memory; the pattern syntax is the shared one, identical across harnesses. The health check runs once — if the server is unreachable the extension stays disconnected for the whole session, every handler returns early, and the tools say so. No retries, no repeated warnings.
+**Two guards.** The bypass check runs the shared `isBypassed` against the cwd on every handler, not once at startup, so a scratch directory never pollutes long-term memory and the panel can turn the switch on or off mid-session; the pattern syntax is the shared one, identical across harnesses. The health check runs once — if the server is unreachable the extension stays disconnected for the whole session, every handler returns early, and the tools say so. No retries, no repeated warnings.
 
 **Startup is memoized, not awaited.** The startup chain — health check, session derivation, pending replay, profile build, takeover restore, tool registration — costs a couple of seconds against a remote server, and `session_start` does not await it, because that delay would land on every pi launch. `before_agent_start` awaits the same in-flight promise, so the first turn still gets its profile and recall. That is also the only startup path a `pi -c` continuation has: pi does not fire `session_start` for one.
 
@@ -187,7 +189,19 @@ The entry point. It loads the config, returns immediately when disabled, constru
 
 **Tool guard.** `guardVikingUriToolCall` (`lib/uri-guard-adapter.mjs`) watches for a `viking://` URI handed as a path to a host file tool that cannot read one — `read`, `grep`, `find`, `ls` — and blocks the call with the equivalent `viking_*` invocation spelled out. Without it the model burns turns on a file path that does not exist on disk. A grep `pattern` is search text, not a path, so grepping a local tree for `viking://` is not blocked. `bash` is not blocked either: a URI in a command is as often data (an `ov` argument, an HTTP payload, a search pattern) as a path the model hoped to open. The command runs, and on `tool_result` `noticeVikingUriToolResult` appends a text block to its output that names `viking_read` / `viking_search` and tells the model to ignore the notice when the URI was intentional.
 
-**Surface.** The status line reports connection, entries added on the last turn, and either takeover coverage against its threshold or the plain commit threshold. `/viking` prints that same state; `/viking commit` forces a flush and commit, which under takeover also advances the boundary.
+**Surface.** The footer has one density knob (`statusBarLevel`: hidden, minimal, standard, verbose). Each visible segment has exactly one meaning: `⇅n` is the sync watermark, `c/l` is takeover coverage, and the token pair is pressure against whichever threshold currently applies — takeover's counter while takeover owns the boundary, the server's `pending_tokens` otherwise. `/viking` opens the panel; *commit now* forces a flush and commit, which under takeover also advances the boundary.
+
+### settings.ts
+
+The `/viking` panel. Seven top-level rows (Session, Capture, Recall, Context, Interface, Diagnostics, Advanced) each open their own `SettingsList`; a section closes by reporting its summary back, so the parent row always shows the current value. Editable ids live in a `SETTERS` table, and opening the panel warns if a row has drifted away from its setter. `commit now` closes its submenu before the network call and reports through `notify`, because a submenu that keeps focus swallows every key. The Diagnostics rows read config-derived values from the live object and count-derived values from the snapshot taken when the panel opened. Doctor output is a small pager whose child process is started once per panel.
+
+### lib/pi-config.mjs
+
+The untyped resolution layer behind `config.ts`, kept in `lib/` so `scripts/doctor.mjs` — a plain Node entrypoint that cannot import TypeScript — resolves exactly what the extension does. It merges the same layers as `buildPluginConfig`, forces pi's takeover default to off unless a layer (including `ov.conf`) set it, applies the sidecar allowlist, and re-resolves the effective peer when the sidecar changes `workspacePeer`. Saves persist only the changed key, so untouched values keep coming from env and `ovcli.conf`; legacy keys are deleted on every save. The key list itself lives in `lib/pi-settings.mjs`; `settings.ts` types its setter table against that union, so a key without a setter (or a setter without a key) fails typechecking.
+
+### scripts/doctor.mjs
+
+The doctor host: install checks, the pi config sections (credential sources, peer, toggles, timeouts), and local activity (pending queue, recall ledger, debug log). Everything else — argument parsing, environment checks, connection probes, rendering — comes from `shared/doctor-core.mjs`; the panel runs this file as a child process and pages its output.
 
 ## Event flow
 

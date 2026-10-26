@@ -126,7 +126,6 @@ writeFileSync(OVCLI_CONF, JSON.stringify({
   api_key: OV_KEY,
   plugin: {
     pi: {
-      enabled: true,
       autoCapture: true,
       logLevel: "info",
       takeoverEnabled: true,
@@ -164,7 +163,8 @@ function runTurn(turn, prompt, extraArgs = []) {
       SUPER_RELAY_API_KEY: RELAY_KEY,
       OV_E2E_OUT: outDir,
       OV_E2E_TURN: String(turn),
-      OV_DEBUG_LOG: join(outDir, "takeover.log"),
+      OPENVIKING_DEBUG_LOG: join(outDir, "takeover.log"),
+      OPENVIKING_DEBUG: "1",
     },
     timeout: 300_000,
     encoding: "utf8",

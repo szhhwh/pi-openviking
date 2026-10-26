@@ -102,26 +102,36 @@ git update-ref refs/synced/upstream-main <最近 sync 提交里的 full-sha>
 
 ## 与上游的差异
 
-在新增四个上游没有的文件之外，还有四个文件带本地功能改动：
+上游没有的本地文件共九个：
 
 - `package.json` — pi 包清单（`pi.extensions` 指向 `./index.ts`）
-- `settings.ts` — 设置页（会话召回开关、footer 状态栏配置）
+- `settings.ts` — `/viking` 面板（分区设置、诊断快照、doctor 分页器）
+- `lib/pi-config.mjs` — pi 配置解析 + `~/.openviking/pi-settings.json` sidecar
+- `lib/pi-config.d.mts` — 上者的类型声明（`config.ts` 不再双重 cast）
+- `lib/pi-settings.mjs` — 面板设置键的唯一清单（sidecar / 控件 / setter 共用）
+- `scripts/doctor.mjs` — 完整诊断入口（复用 shared/doctor-core）
+- `lib/dynamic-logger.mjs` — 运行时可切换目标路径的 logger 包装
 - `.gitignore`
 - `SYNC.md` — 本文件
 
-另有本地改动的文件：`README.md`、`config.ts`（sidecar config.json 持久化 +
-statusBar；上游删了 config.json 改走 ovcli.conf 分层，本地把 sidecar 作为
-设置页持久化层保留在 `loadConfigFromModuleUrl`）、`client.ts`（fetchJSON
-第 4 参数 AbortSignal：Esc 中断、aborted/timedOut 归因，向上兼容上游新的
-options 对象形态）、`index.ts`（settings 页接线、/viking 子命令补全）、
-`recall.ts`（searchPending 的 signal 短路）。
+另有本地改动的文件：`README.md`、`config.ts`（薄类型层，实际解析在
+`lib/pi-config.mjs`；takeover 默认关闭，`enabled` 总开关已移除）、
+`client.ts`（fetchJSON 第 4 参数 AbortSignal：Esc 中断、aborted/timedOut
+归因，向上兼容上游新的 options 对象形态）、`index.ts`（`/viking` 直接打开
+面板、四档 footer、动态 logger、实时 bypass）、`recall.ts`（searchPending 的 signal 短路；
+ledger 按实时配置开关）、`sync.ts`（动态 logger、页脚用 pending_tokens）、
+`tests/config.test.mjs` 与 `tests/pi-config.test.mjs`（takeover 默认值、ov.conf
+opt-in、sidecar 选择性保存与旧键清理）。
 
-`config.json` 现为运行时 sidecar（.gitignore 已忽略）：设置页把用户改动
-持久化到这里，启动时覆盖在标准分层之上。上游版本不含此文件。
+设置页持久化在 `~/.openviking/pi-settings.json`（不在仓库内，避免 `pi update`
+清理未跟踪文件时被删除）：只写入本次改动的键，旧 `config.json`、嵌套
+`takeover`、`enabled`、`syncTurns`、`bypassPatterns`、`statusBar` 均不再读取，
+保存时清除。
 
 ## 其他
 
-- 行为配置：仓库内 `config.json`（随仓库走）；凭据在 `~/.openviking/ovcli.conf`
+- 行为配置：`~/.openviking/ovcli.conf` 的 `plugin.pi` / `plugin`，面板改动落在
+  `~/.openviking/pi-settings.json`；凭据在 `~/.openviking/ovcli.conf`
   或 `OPENVIKING_*` 环境变量（不受本仓库影响）
 - 上游 fetch 配置：`remote.upstream.fetch = +refs/heads/main:refs/remotes/upstream/main`（仅 main，勿改回 `*`）
 - 部分克隆配置：origin/upstream 均 `blob:none`（见「部分克隆」说明），勿删

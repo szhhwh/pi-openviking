@@ -11,8 +11,9 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isCaptureEnabled } from "./shared/capture-utils.mjs";
-import { createLogger } from "./shared/debug-log.mjs";
-import { loadConfigFromModuleUrl, saveConfigFromModuleUrl, type OVConfig } from "./config.js";
+import { createDynamicLogger } from "./lib/dynamic-logger.mjs";
+import { loadEffectiveConfig, saveConfig, type OVConfig } from "./config.js";
+import { listPending } from "./shared/pending-queue.mjs";
 import { OVClient } from "./client.js";
 import { RecallManager } from "./recall.js";
 import { RecallLedger } from "./lib/recall-ledger.mjs";
@@ -26,10 +27,7 @@ import { openVikingSettings } from "./settings.js";
 
 export default async function (pi: ExtensionAPI) {
   // --- Load config ---
-  const config = loadConfigFromModuleUrl(import.meta.url);
-  if (!config.enabled) return;
-
-  // Env overrides
+  const config = loadEffectiveConfig();
 
   // --- Initialize modules ---
   const client = new OVClient(config);
@@ -39,13 +37,12 @@ export default async function (pi: ExtensionAPI) {
     config,
     () => sync.sessionId,
     // The ledger keeps request prefixes byte-stable for provider prompt
-    // caches (#4137); it is per pi session and opened once the id is known.
-    config.recallLedger ? new RecallLedger() : null,
+    // caches (#4137). It is always constructed and opened once the session id
+    // is known; RecallManager gates replay on the live config so the panel can
+    // switch it off without restarting.
+    new RecallLedger(),
   );
-  const logger = createLogger("pi", {
-    debug: Boolean(config.debugLogPath),
-    debugLogPath: config.debugLogPath,
-  });
+  const logger = createDynamicLogger("pi", () => config.debugLogPath);
   const takeover = createTakeoverManager({
     pi, client, sync, config,
     log: (message: string) => logger.log("takeover", message),
@@ -53,17 +50,26 @@ export default async function (pi: ExtensionAPI) {
 
   // Session state
   let connected = false;
-  let bypassed = false;
+  const bypassedNow = () => isBypassed(config, { cwd: process.cwd() });
   let profileBlock = "";
   let archiveOverview = "";
   let toolsRegistered = false;
   let compacted = false;
   let started = false;
+  let startFinished = false;
   let startPromise: Promise<void> | null = null;
   // Session-scoped switch (/viking recall, settings page): when true, no
   // <openviking-context> blocks are injected — recall search, profile and
   // archive overview are all gated. Sync and takeover keep running.
   let recallDisabled = false;
+
+  // The footer shows pressure against whichever threshold currently applies:
+  // takeover's own counter while takeover owns the boundary, the server's
+  // pending_tokens otherwise (TakeoverCore never accumulates when disabled).
+  const statusState = () => ({
+    ...takeover.state,
+    pendingTokens: config.takeoverEnabled ? takeover.state.pendingTokens : sync.pendingTokens,
+  });
 
   // ================================================================
   // Event Handlers
@@ -73,14 +79,8 @@ export default async function (pi: ExtensionAPI) {
     if (started) return;
     if (startPromise) return startPromise;
 
+    startFinished = false;
     startPromise = (async () => {
-      // Bypass check
-      if (isBypassed(config, { cwd: process.cwd() })) {
-        bypassed = true;
-        started = true;
-        return;
-      }
-
       // Health check
       connected = await client.health();
       if (!connected) {
@@ -121,7 +121,7 @@ export default async function (pi: ExtensionAPI) {
         registerTools(pi, client, sync);
         toolsRegistered = true;
       }
-      updateStatus(ctx, connected, 0, sync.sessionId, config, takeover.state, recallDisabled);
+      updateStatus(ctx, connected, sync.syncedCount, sync.sessionId, config, statusState(), recallDisabled);
 
       started = true;
       if (config.logLevel === "info") {
@@ -129,6 +129,7 @@ export default async function (pi: ExtensionAPI) {
       }
     })().finally(() => {
       startPromise = null;
+      startFinished = true;
     });
 
     return startPromise;
@@ -157,7 +158,7 @@ export default async function (pi: ExtensionAPI) {
     // session_start doesn't fire for pi -c continuations.
     await start(ctx);
 
-    if (!connected || bypassed) return;
+    if (!connected || bypassedNow()) return;
 
     // Queue recall for the context hook. Pi renders the user message before
     // that hook, so recall latency does not delay the message appearing.
@@ -185,7 +186,7 @@ export default async function (pi: ExtensionAPI) {
 
   // --- context ---
   pi.on("context", async (event, ctx) => {
-    if (!connected || bypassed) return;
+    if (!connected || bypassedNow()) return;
 
     // Keep recall synchronous with the provider request so the current prompt
     // still receives current-query memory, without blocking user-message UI.
@@ -255,18 +256,18 @@ export default async function (pi: ExtensionAPI) {
 
   // --- turn_end ---
   pi.on("turn_end", async (event, ctx) => {
-    if (!connected || bypassed || !isCaptureEnabled(config)) return;
+    if (!connected || bypassedNow() || !isCaptureEnabled(config)) return;
 
     const branch = ctx.sessionManager.getBranch();
     const result = await sync.syncBranch(branch);
     logger.log("turn_end", { added: result.added, tokens: result.tokens });
     await takeover.onTurnSynced(result.tokens);
-    updateStatus(ctx, connected, result.added, sync.sessionId, config, takeover.state, recallDisabled);
+    updateStatus(ctx, connected, sync.syncedCount, sync.sessionId, config, statusState(), recallDisabled);
   });
 
   // --- session_before_compact ---
   pi.on("session_before_compact", async (event, _ctx) => {
-    if (!connected || bypassed) return;
+    if (!connected || bypassedNow()) return;
 
     if (config.takeoverEnabled) {
       const prep = (event as any)?.preparation ?? {};
@@ -290,7 +291,7 @@ export default async function (pi: ExtensionAPI) {
 
   // --- session_shutdown ---
   pi.on("session_shutdown", async (_event, ctx) => {
-    if (!connected || bypassed) return;
+    if (!connected || bypassedNow()) return;
 
     await sync.shutdown();
     if (config.takeoverEnabled) {
@@ -310,135 +311,66 @@ export default async function (pi: ExtensionAPI) {
   // ================================================================
 
   const refreshStatus = (ctx: any) =>
-    updateStatus(ctx, connected, sync.syncedCount, sync.sessionId, config, takeover.state, recallDisabled);
+    updateStatus(ctx, connected, sync.syncedCount, sync.sessionId, config, statusState(), recallDisabled);
+
+  const commitNow = async (): Promise<{ ok: boolean; detail?: string }> => {
+    if (!connected) return { ok: false, detail: "not connected" };
+    await sync.shutdown();
+    if (config.takeoverEnabled) {
+      return { ok: await takeover.commitAndAdvance() };
+    }
+    const result = await sync.commit();
+    return result
+      ? { ok: true, detail: result.trace_id ? `trace_id=${result.trace_id}` : undefined }
+      : { ok: false };
+  };
+
+  const collectDiagnostics = async () => {
+    let pendingCount = 0;
+    try {
+      pendingCount = (await listPending()).length;
+    } catch {
+      // An unreadable queue reads as empty here; the full doctor covers
+      // directory-level problems.
+    }
+    const state = takeover.state;
+    return {
+      connected,
+      endpoint: config.endpoint,
+      authMode: config.authMode,
+      sessionId: sync.sessionId,
+      peerId: config.peerId,
+      recallScope: config.recallPeerScope,
+      syncedEntries: sync.syncedCount,
+      pendingCount,
+      debugLogPath: config.debugLogPath,
+      takeoverEnabled: config.takeoverEnabled,
+      takeoverCovered: state.coveredUserTurns,
+      takeoverSeen: state.lastSeenUserTurns,
+      pendingTokens: state.pendingTokens,
+      starting: !started && !startFinished,
+    };
+  };
 
   pi.registerCommand("viking", {
-    description: "OpenViking: status, commit, settings, recall [on|off]",
-    getArgumentCompletions: (prefix: string) => {
-      const items: Array<{ value: string; label: string; description?: string }> = [];
-      const push = (value: string, label: string, description: string) =>
-        items.push({ value, label, description });
-
-      const trimmed = prefix.trim();
-      const endsSpace = /\s$/.test(prefix);
-      const words = trimmed ? trimmed.split(/\s+/) : [];
-
-      // "/viking <tab>" → all subcommands
-      if (words.length === 0) {
-        push("commit", "commit", "force a memory commit now");
-        push("settings", "settings", "open the settings page");
-        push("recall", "recall", "toggle context injection [on|off]");
-        return items;
-      }
-
-      const first = words[0];
-      const isRecall = ["recall", "inject", "injection"].includes(first);
-
-      // Second-level: "/viking recall [on|off]"
-      if (isRecall) {
-        const partial = words.length === 1 && !endsSpace ? "" : (words[1] ?? "");
-        if (words.length <= 2) {
-          if ("on".startsWith(partial)) push(`${first} on`, "on", "re-enable context injection");
-          if ("off".startsWith(partial)) push(`${first} off`, "off", "pause context injection (session only)");
-        }
-        return items.length ? items : null;
-      }
-
-      // First-level: completing the subcommand word itself
-      if (words.length === 1 && !endsSpace) {
-        const subs: Array<[string, string]> = [
-          ["commit", "force a memory commit now"],
-          ["settings", "open the settings page"],
-          ["recall", "toggle context injection [on|off]"],
-        ];
-        for (const [word, desc] of subs) {
-          if (word.startsWith(first)) push(word, word, desc);
-        }
-      }
-      return items.length ? items : null;
-    },
-    handler: async (args, ctx) => {
-      if (!connected) {
-        ctx.ui.notify("OpenViking: not connected", "warning");
-        return;
-      }
-
-      const trimmed = (args ?? "").trim();
-      const spaceIdx = trimmed.indexOf(" ");
-      const cmd = spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
-      const rest = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1).trim().toLowerCase();
-
-      // --- /viking commit ---
-      if (cmd === "commit") {
-        await sync.shutdown();
-        const commitResult = config.takeoverEnabled ? null : await sync.commit();
-        const ok = config.takeoverEnabled
-          ? await takeover.commitAndAdvance()
-          : commitResult !== null;
-        if (ok) {
-          ctx.ui.notify(
-            "OpenViking: committed successfully" +
-              (commitResult?.trace_id ? ` (trace_id=${commitResult.trace_id})` : ""),
-            "info",
-          );
-        } else {
-          ctx.ui.notify("OpenViking: commit failed", "error");
-        }
-        refreshStatus(ctx);
-        return;
-      }
-
-      // --- /viking settings ---
-      if (cmd === "settings" || cmd === "config") {
-        await openVikingSettings(ctx, {
-          config,
-          connected,
-          sessionId: sync.sessionId,
-          recallDisabled,
-          onRecallToggle: (disabled) => {
-            recallDisabled = disabled;
-            refreshStatus(ctx);
-          },
-          onPersist: (cfg) => {
-            const ok = saveConfigFromModuleUrl(import.meta.url, cfg);
-            refreshStatus(ctx); // reflect threshold/injection changes in the footer immediately
-            return ok;
-          },
-        });
-        return;
-      }
-
-      // --- /viking recall [on|off] (temporary context-injection switch) ---
-      if (cmd === "recall" || cmd === "inject" || cmd === "injection") {
-        const target = rest === "on" ? false : rest === "off" ? true : !recallDisabled;
-        if (target === recallDisabled && (rest === "on" || rest === "off")) {
-          ctx.ui.notify(`OpenViking: context injection is already ${rest}.`, "info");
-          return;
-        }
-        recallDisabled = target;
-        refreshStatus(ctx);
-        ctx.ui.notify(
-          recallDisabled
-            ? "OpenViking: context injection OFF for this session — no <openviking-context> blocks (recall, profile, archive overview) will be injected. Sync and takeover keep running. '/viking recall on' re-enables."
-            : "OpenViking: context injection ON — memory recall is active again.",
-          "info",
-        );
-        return;
-      }
-
-      // --- status (default) ---
-      // Note: info notify maps to a transient status toast that the next
-      // notify replaces, so status + subcommand hint must be a single message.
-      const sid = sync.sessionId ?? "none";
-      const t = takeover.state;
-      const takeoverInfo = config.takeoverEnabled
-        ? ` | takeover: ${t.coveredUserTurns}/${t.lastSeenUserTurns} turns archived, ~${t.pendingTokens} tokens pending`
-        : "";
-      ctx.ui.notify(
-        `OpenViking: ${connected ? "connected" : "disconnected"} | session: ${sid.slice(0, 12)}... | injection: ${recallDisabled ? "off" : "on"}${takeoverInfo}` +
-          ` | /viking commit · settings · recall [on|off]`,
-        "info",
-      );
+    description: "OpenViking: open the settings, diagnostics and session actions panel",
+    handler: async (_args, ctx) => {
+      const snapshot = await collectDiagnostics();
+      await openVikingSettings(ctx, {
+        config,
+        snapshot,
+        recallDisabled,
+        onRecallToggle: (disabled) => {
+          recallDisabled = disabled;
+          refreshStatus(ctx);
+        },
+        onCommit: commitNow,
+        onPersist: (cfg, key) => {
+          const ok = saveConfig(cfg, [key]);
+          refreshStatus(ctx);
+          return ok;
+        },
+      });
     },
   });
 }
@@ -546,7 +478,7 @@ function captureStatusTheme(ctx: any): void {
 export function updateStatus(
   ctx: any,
   connected: boolean,
-  added: number,
+  synced: number,
   sessionId: string | null,
   config: OVConfig,
   takeoverState?: { pendingTokens?: number; coveredUserTurns?: number; lastSeenUserTurns?: number },
@@ -555,48 +487,60 @@ export function updateStatus(
   const setter = ctx?.ui?.setStatus;
   if (typeof setter !== "function") return;
   try {
-    const sb = config.statusBar;
-    if (!sb?.enabled) {
+    const level = config.statusBarLevel;
+    if (level === "hidden") {
       setter("openviking", undefined); // remove the footer segment entirely
       return;
     }
 
     const sep = statusColor("dim", " · ");
-    const parts: string[] = [];
-
-    // Brand + connection dot (always present when the bar is enabled)
-    parts.push(
+    const parts: string[] = [
       statusColor("accent", "OV") +
         (connected ? statusColor("success", " ●") : statusColor("error", " ○")),
-    );
+    ];
 
-    // Synced entries this session
-    if (sb.showSync && added > 0) {
-      parts.push(`${statusColor("dim", "⇅")}${added}`);
+    // One denominator: takeover pressure while takeover owns the boundary,
+    // commit pressure otherwise. Two unexplained token pairs was the old bug.
+    const threshold = config.takeoverEnabled
+      ? config.takeoverTokenThreshold
+      : config.commitTokenThreshold;
+    const pressure = takeoverState?.pendingTokens ?? 0;
+    const near = threshold > 0 && pressure >= threshold * 0.8;
+
+    if (level === "minimal") {
+      if (recallDisabled) parts.push(statusColor("warning", "⏸"));
+      if (near) parts.push(statusColor("warning", "⚠"));
+      setter("openviking", parts.join(sep));
+      return;
     }
 
-    // Takeover progress: covered/seen user turns + token pressure vs threshold
-    if (sb.showTakeover && config.takeoverEnabled && takeoverState) {
+    // Session watermark, not last turn's delta: one meaning across refreshes.
+    if (synced > 0) {
+      parts.push(`${statusColor("dim", "⇅")}${synced}`);
+    }
+
+    if (config.takeoverEnabled && takeoverState) {
       const covered = takeoverState.coveredUserTurns ?? 0;
       const seen = takeoverState.lastSeenUserTurns ?? 0;
-      const pendingTokens = takeoverState.pendingTokens ?? 0;
       if (seen > 0) {
-        parts.push(`${statusColor("dim", "ctx")} ${covered}/${seen}`);
-      }
-      if (pendingTokens > 0) {
         parts.push(
-          `${humanizeTokens(pendingTokens)}${statusColor("dim", `/${humanizeTokens(config.takeoverTokenThreshold)}`)}`,
+          level === "verbose"
+            ? `${statusColor("dim", "ctx")} ${covered}/${seen}`
+            : `${covered}/${seen}`,
         );
       }
     }
 
-    // Session-scoped injection pause
-    if (sb.showInjection && recallDisabled) {
-      parts.push(statusColor("warning", "⏸inj"));
+    if (pressure > 0) {
+      parts.push(
+        `${near ? statusColor("warning", humanizeTokens(pressure)) : humanizeTokens(pressure)}` +
+          statusColor("dim", `/${humanizeTokens(threshold)}`),
+      );
     }
 
-    // Session id tail
-    if (sb.showSession && sessionId) {
+    if (recallDisabled) parts.push(statusColor("warning", "⏸inj"));
+
+    if (level === "verbose" && sessionId) {
       parts.push(statusColor("dim", `${sessionId.slice(0, 8)}…`));
     }
 

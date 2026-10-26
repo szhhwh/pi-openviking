@@ -66,6 +66,22 @@ async function readLastRecord(path) {
   return JSON.parse(lines[lines.length - 1]);
 }
 
+test("commitIfNeeded exposes server pending tokens for the footer", async () => {
+  await withPendingDir(async () => {
+    const below = client({ getSession: async () => ({ pending_tokens: 1234 }) });
+    const sync = new SyncManager(below, config({ takeoverEnabled: false, commitTokenThreshold: 20000 }));
+    await sync.ensureSession("pi-footer");
+    await sync.commitIfNeeded();
+    assert.equal(sync.pendingTokens, 1234, "below the threshold the pressure is still reported");
+
+    const above = client({ getSession: async () => ({ pending_tokens: 25000 }) });
+    const committed = new SyncManager(above, config({ takeoverEnabled: false, commitTokenThreshold: 20000 }));
+    await committed.ensureSession("pi-footer");
+    await committed.commitIfNeeded();
+    assert.equal(committed.pendingTokens, 0, "a successful commit clears the reported pressure");
+  });
+});
+
 test("commit writes success trace_id to the pi debug log", async () => {
   await withPendingDir(async (dir) => {
     const debugLogPath = join(dir, "pi-debug.log");

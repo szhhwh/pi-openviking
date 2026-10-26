@@ -1,5 +1,5 @@
 import type { OVClient } from "./client.js";
-import { createLogger } from "./shared/debug-log.mjs";
+import { createDynamicLogger } from "./lib/dynamic-logger.mjs";
 import type { OVConfig } from "./config.js";
 import { deriveHarnessSessionId } from "./shared/session-model.mjs";
 import { claimForReplay, dequeue, enqueue, incrementRetry, listPending, replayPending } from "./shared/pending-queue.mjs";
@@ -23,21 +23,21 @@ export interface SyncBranchResult {
 export class SyncManager {
   private client: OVClient;
   private config: OVConfig;
-  private logger: ReturnType<typeof createLogger>;
+  private logger: ReturnType<typeof createDynamicLogger>;
   private ovSessionId: string | null = null;
   private syncedEntryCount = 0;
+  /** Server-reported pending tokens, used by the footer when takeover is off. */
+  private pendingTokenCount = 0;
 
   constructor(client: OVClient, config: OVConfig) {
     this.client = client;
     this.config = config;
-    this.logger = createLogger("pi", {
-      debug: Boolean(config.debugLogPath),
-      debugLogPath: config.debugLogPath,
-    });
+    this.logger = createDynamicLogger("pi", () => this.config.debugLogPath);
   }
 
   get sessionId(): string | null { return this.ovSessionId; }
   get syncedCount(): number { return this.syncedEntryCount; }
+  get pendingTokens(): number { return this.pendingTokenCount; }
 
   restoreWatermark(n: number): void {
     const next = Math.max(0, Math.floor(Number(n) || 0));
@@ -203,8 +203,10 @@ export class SyncManager {
     if (!this.ovSessionId) return;
     const meta = await this.client.getSession(this.ovSessionId);
     const pending = Number(meta?.pending_tokens || 0);
+    this.pendingTokenCount = Number.isFinite(pending) ? Math.max(0, pending) : 0;
     if (pending >= this.config.commitTokenThreshold) {
-      await this.commit();
+      const result = await this.commit();
+      if (result) this.pendingTokenCount = 0;
     }
   }
 

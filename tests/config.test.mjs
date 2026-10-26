@@ -16,7 +16,7 @@ import { isBypassed } from "../shared/session-model.mjs";
  * Run `loadConfig()` with `body` as the extension's `plugin.pi` section of a
  * throwaway ovcli.conf. `cliConfig` adds the connection fields around it.
  */
-async function withPluginSection(body, fn, env = {}, cliConfig = null) {
+async function withPluginSection(body, fn, env = {}, cliConfig = null, ovConf = null) {
   const dir = await mkdtemp(join(tmpdir(), "ov-pi-config-用户-"));
   const oldEnv = {
     OPENVIKING_URL: process.env.OPENVIKING_URL,
@@ -30,7 +30,6 @@ async function withPluginSection(body, fn, env = {}, cliConfig = null) {
     OPENVIKING_CLI_CONFIG_FILE: process.env.OPENVIKING_CLI_CONFIG_FILE,
     OPENVIKING_CONFIG_FILE: process.env.OPENVIKING_CONFIG_FILE,
     OPENVIKING_DEBUG_LOG: process.env.OPENVIKING_DEBUG_LOG,
-    OV_DEBUG_LOG: process.env.OV_DEBUG_LOG,
     OPENVIKING_BYPASS_SESSION: process.env.OPENVIKING_BYPASS_SESSION,
     OPENVIKING_BYPASS_SESSION_PATTERNS: process.env.OPENVIKING_BYPASS_SESSION_PATTERNS,
   };
@@ -45,7 +44,6 @@ async function withPluginSection(body, fn, env = {}, cliConfig = null) {
   delete process.env.OPENVIKING_WORKSPACE_PEER;
   delete process.env.OPENVIKING_RECALL_PEER_SCOPE;
   delete process.env.OPENVIKING_DEBUG_LOG;
-  delete process.env.OV_DEBUG_LOG;
   delete process.env.OPENVIKING_BYPASS_SESSION;
   delete process.env.OPENVIKING_BYPASS_SESSION_PATTERNS;
   for (const [key, value] of Object.entries(env)) {
@@ -59,6 +57,9 @@ async function withPluginSection(body, fn, env = {}, cliConfig = null) {
       JSON.stringify({ ...(cliConfig || {}), plugin: { pi: body } }),
       "utf8",
     );
+    if (ovConf) {
+      await writeFile(join(dir, "ov.conf"), JSON.stringify(ovConf), "utf8");
+    }
     return await fn(loadConfig(), dir);
   } finally {
     for (const [key, value] of Object.entries(oldEnv)) {
@@ -69,15 +70,29 @@ async function withPluginSection(body, fn, env = {}, cliConfig = null) {
   }
 }
 
-test("loadConfig defaults takeover on", async () => {
+test("loadConfig defaults takeover off", async () => {
   await withPluginSection({}, (cfg) => {
-    assert.equal(cfg.takeoverEnabled, true);
+    assert.equal(cfg.takeoverEnabled, false);
     assert.equal(cfg.takeoverTokenThreshold, 30000);
     assert.equal(cfg.takeoverKeepRecentTurns, 3);
     assert.equal(cfg.takeoverOverviewBudget, 3000);
     assert.equal(cfg.takeoverOverviewPollMs, 2000);
     assert.equal(cfg.takeoverOverviewPollMax, 15);
+    assert.equal(cfg.statusBarLevel, "standard");
+    assert.equal("enabled" in cfg, false, "the master switch is gone");
   });
+});
+
+test("loadConfig honours an explicit takeover opt-in", async () => {
+  await withPluginSection({ takeoverEnabled: true }, (cfg) => {
+    assert.equal(cfg.takeoverEnabled, true);
+  });
+});
+
+test("loadConfig honours a takeover opt-in from ov.conf", async () => {
+  await withPluginSection({}, (cfg) => {
+    assert.equal(cfg.takeoverEnabled, true);
+  }, {}, null, { pi: { takeoverEnabled: true } });
 });
 
 test("loadConfig reads the takeover knobs", async () => {
@@ -140,31 +155,16 @@ test("loadConfig prefers the plugin section peer over workspace derivation", asy
   });
 });
 
-test("loadConfig still honours the deprecated OV_DEBUG_LOG", async () => {
-  await withPluginSection({}, (cfg) => {
-    assert.equal(cfg.debugLogPath, "/tmp/ov-pi-legacy.log");
-  }, { OV_DEBUG_LOG: "/tmp/ov-pi-legacy.log" });
-});
-
-test("loadConfig prefers OPENVIKING_DEBUG_LOG over the deprecated alias", async () => {
-  await withPluginSection({ debugLogPath: "/tmp/ov-pi-file.log" }, (cfg) => {
-    assert.equal(cfg.debugLogPath, "/tmp/ov-pi-shared.log");
-  }, {
-    OPENVIKING_DEBUG_LOG: "/tmp/ov-pi-shared.log",
-    OV_DEBUG_LOG: "/tmp/ov-pi-legacy.log",
-  });
-});
-
 test("loadConfig falls back to the plugin section debug log path", async () => {
   await withPluginSection({ debugLogPath: " /tmp/ov-pi-file.log " }, (cfg) => {
     assert.equal(cfg.debugLogPath, "/tmp/ov-pi-file.log");
   });
 });
 
-test("loadConfig projects bypassPatterns onto the name the shared matcher reads", async () => {
-  await withPluginSection({ bypassPatterns: ["/tmp/scratch*", " "] }, (cfg) => {
+test("loadConfig exposes only the shared bypass spelling", async () => {
+  await withPluginSection({ bypassSessionPatterns: ["/tmp/scratch*", " "] }, (cfg) => {
     assert.deepEqual(cfg.bypassSessionPatterns, ["/tmp/scratch*"]);
-    assert.deepEqual(cfg.bypassPatterns, ["/tmp/scratch*"]);
+    assert.equal("bypassPatterns" in cfg, false);
     assert.equal(isBypassed(cfg, { cwd: "/tmp/scratch-1" }), true);
     assert.equal(isBypassed(cfg, { cwd: "/tmp/keep" }), false);
   });

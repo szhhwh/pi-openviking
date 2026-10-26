@@ -109,7 +109,7 @@ export class RecallManager {
     messages: any[],
     messageIdFor: (message: any) => string | null = () => null,
   ): any[] {
-    const ledger = this.ledger?.isOpen ? this.ledger : null;
+    const ledger = this.config.recallLedger !== false && this.ledger?.isOpen ? this.ledger : null;
     if (!this.cache.block && !ledger) return messages;
 
     // Locate the newest user message; everything before it is history.
