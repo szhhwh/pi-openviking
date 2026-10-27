@@ -18,7 +18,7 @@ import { OVClient } from "./client.js";
 import type { OvHttpRequestOptions } from "./client.js";
 import { RecallManager } from "./recall.js";
 import { RecallLedger } from "./lib/recall-ledger.mjs";
-import { RecallProgress, formatElapsed } from "./progress.js";
+import { RecallProgress } from "./progress.js";
 import { SyncManager } from "./sync.js";
 import { buildProfileBlock } from "./shared/profile-inject.mjs";
 import { isBypassed } from "./shared/session-model.mjs";
@@ -75,16 +75,14 @@ export default async function (pi: ExtensionAPI) {
 
   // Live progress for the two waits that sit between "user pressed enter" and
   // the provider request: the first-turn startup chain and each recall search.
-  // The reporter refreshes the footer and the working-row message, so a slow
-  // server never looks like a frozen prompt.
-  const progress = new RecallProgress((_snapshot, ctx) => {
-    if (ctx) refreshStatus(ctx);
-  });
+  // Only the working row reports it (`⠋ [2s]`); the footer segment is reserved
+  // for standing state, so this never triggers a status refresh.
+  const progress = new RecallProgress();
 
   const refreshStatus = (ctx: any) =>
     updateStatus(
       ctx, connected, sync.syncedCount, sync.sessionId, config,
-      statusState(), recallDisabled, progress.snapshot(),
+      statusState(), recallDisabled,
     );
 
   // ================================================================
@@ -137,7 +135,7 @@ export default async function (pi: ExtensionAPI) {
         registerTools(pi, client, sync);
         toolsRegistered = true;
       }
-      updateStatus(ctx, connected, sync.syncedCount, sync.sessionId, config, statusState(), recallDisabled, progress.snapshot());
+      updateStatus(ctx, connected, sync.syncedCount, sync.sessionId, config, statusState(), recallDisabled);
 
       started = true;
       if (config.logLevel === "info") {
@@ -516,7 +514,6 @@ export function updateStatus(
   config: OVConfig,
   takeoverState?: { pendingTokens?: number; coveredUserTurns?: number; lastSeenUserTurns?: number },
   recallDisabled = false,
-  progress?: { phase: "connect" | "recall"; elapsedMs: number } | null,
 ): void {
   const setter = ctx?.ui?.setStatus;
   if (typeof setter !== "function") return;
@@ -540,15 +537,6 @@ export function updateStatus(
       : config.commitTokenThreshold;
     const pressure = takeoverState?.pendingTokens ?? 0;
     const near = threshold > 0 && pressure >= threshold * 0.8;
-
-    // Live request-path progress: the only segment that moves while the
-    // prompt is waiting on OpenViking rather than on the model.
-    if (progress) {
-      parts.push(
-        statusColor("accent", "⟳ ") +
-          statusColor("dim", formatElapsed(progress.elapsedMs)),
-      );
-    }
 
     if (level === "minimal") {
       if (recallDisabled) parts.push(statusColor("warning", "⏸"));

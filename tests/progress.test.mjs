@@ -1,6 +1,6 @@
-// Progress reporting for the request path: the footer phase/elapsed state and
-// the recall lifecycle hooks that drive it. Both are pure enough to test
-// without a TUI: a fake ctx records the calls pi would receive.
+// Progress reporting for the request path: the working-row label and the recall
+// lifecycle hooks that drive it. Both are pure enough to test without a TUI:
+// a fake ctx records the calls pi would receive.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -21,33 +21,34 @@ function fakeCtx() {
   };
 }
 
-function snapshotLog() {
-  const seen = [];
-  const reporter = new RecallProgress((snapshot, ctx) => {
-    if (ctx) seen.push(snapshot ? { ...snapshot } : null);
-  });
-  return { reporter, seen };
-}
-
-test("begin publishes a phase, sets the working message, and clears both on end", () => {
+test("begin sets the bracketed working message and clears it on end", () => {
   const ctx = fakeCtx();
-  const { reporter, seen } = snapshotLog();
+  const reporter = new RecallProgress();
 
   reporter.begin(ctx, "recall");
-  assert.deepEqual(ctx.workingMessages, ["0s"]);
-  assert.equal(seen.at(-1)?.phase, "recall");
-  assert.ok(seen.at(-1).elapsedMs >= 0);
-  assert.deepEqual(reporter.snapshot().phase, "recall");
+  assert.deepEqual(ctx.workingMessages, ["[0s]"]);
+  assert.equal(reporter.snapshot()?.phase, "recall");
+  assert.ok(reporter.snapshot().elapsedMs >= 0);
 
   reporter.end("recall");
-  assert.deepEqual(ctx.workingMessages, ["0s", undefined]);
-  assert.equal(seen.at(-1), null, "clearing notifies the footer");
+  assert.deepEqual(ctx.workingMessages, ["[0s]", undefined]);
   assert.equal(reporter.snapshot(), null);
+});
+
+test("progress never touches the footer status segment", () => {
+  const ctx = fakeCtx();
+  const reporter = new RecallProgress();
+
+  reporter.begin(ctx, "connect");
+  reporter.begin(ctx, "recall");
+  reporter.end("recall");
+  reporter.dispose();
+  assert.deepEqual(ctx.statuses, [], "the footer carries standing state only");
 });
 
 test("same-phase entries nest, mismatched ends are ignored", () => {
   const ctx = fakeCtx();
-  const { reporter } = snapshotLog();
+  const reporter = new RecallProgress();
 
   reporter.begin(ctx, "recall");
   reporter.begin(ctx, "recall");
@@ -61,7 +62,7 @@ test("same-phase entries nest, mismatched ends are ignored", () => {
 
 test("connect never downgrades a live recall", () => {
   const ctx = fakeCtx();
-  const { reporter } = snapshotLog();
+  const reporter = new RecallProgress();
 
   reporter.begin(ctx, "recall");
   reporter.begin(ctx, "connect");
@@ -74,19 +75,19 @@ test("connect never downgrades a live recall", () => {
 
 test("dispose clears an in-flight phase and restores the working message", () => {
   const ctx = fakeCtx();
-  const { reporter } = snapshotLog();
+  const reporter = new RecallProgress();
 
   reporter.begin(ctx, "connect");
   reporter.dispose();
   assert.equal(reporter.snapshot(), null);
-  assert.deepEqual(ctx.workingMessages, ["0s", undefined]);
+  assert.deepEqual(ctx.workingMessages, ["[0s]", undefined]);
   reporter.dispose(); // idempotent
   assert.equal(ctx.workingMessages.length, 2);
 });
 
 test("non-UI contexts keep the state machine but skip the working message", () => {
   const ctx = { ...fakeCtx(), hasUI: false };
-  const { reporter } = snapshotLog();
+  const reporter = new RecallProgress();
 
   reporter.begin(ctx, "recall");
   assert.deepEqual(ctx.workingMessages, []);
@@ -94,11 +95,15 @@ test("non-UI contexts keep the state machine but skip the working message", () =
   reporter.end("recall");
 });
 
-test("formatElapsed is seconds only", () => {
-  assert.equal(formatElapsed(0), "0s");
-  assert.equal(formatElapsed(999), "0s");
-  assert.equal(formatElapsed(1000), "1s");
-  assert.equal(formatElapsed(2500), "2s");
+test("formatElapsed brackets the seconds and switches to minutes past 60s", () => {
+  assert.equal(formatElapsed(0), "[0s]");
+  assert.equal(formatElapsed(999), "[0s]");
+  assert.equal(formatElapsed(1000), "[1s]");
+  assert.equal(formatElapsed(2500), "[2s]");
+  assert.equal(formatElapsed(59_000), "[59s]");
+  assert.equal(formatElapsed(60_000), "[1m0s]");
+  assert.equal(formatElapsed(75_000), "[1m15s]");
+  assert.equal(formatElapsed(600_000), "[10m0s]");
 });
 
 const cfg = {

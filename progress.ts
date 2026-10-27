@@ -4,38 +4,40 @@
  * Two phases can delay the model request after the user submits a prompt:
  * the startup chain (`session_start` connectivity/session/profile) that
  * `before_agent_start` awaits on the first turn, and the recall retrieval that
- * runs in the `context` hook. Both used to be invisible: the footer kept
- * showing the last known numbers and the working row kept saying "Working", so
- * a slow server looked like a hang.
+ * runs in the `context` hook. Both used to be invisible: the working row kept
+ * saying "Working", so a slow server looked like a hang.
  *
- * The reporter drives two surfaces at once:
- *   - the working row (`setWorkingMessage`), where the spinner carries the
- *     activity and the message is just the elapsed seconds;
- *   - the OpenViking footer segment, which leads with a clock glyph and the
- *     same seconds and stays visible even when the working row is hidden.
+ * The reporter owns one surface: the working row (`setWorkingMessage`), where
+ * pi's own spinner carries the activity and the message is just the bracketed
+ * elapsed time (`⠋ [2s]`). The brackets are the whole distinction — a bare
+ * number would read like a stray token next to the spinner, and a label would
+ * reintroduce the sentence this replaced. The footer stays out of it: the
+ * OpenViking status segment shows standing state only, never a moving clock.
  *
- * The footer is always rendered by `updateStatus`; this module only owns the
- * live phase/elapsed state and refreshes once a second while a phase is in
- * flight.
+ * The reporter refreshes once a second while a phase is in flight.
  */
 
 export type RecallPhase = "connect" | "recall";
 
 export interface ProgressSnapshot {
   phase: RecallPhase;
-  /** Milliseconds since the phase began; feeds the elapsed-seconds label. */
+  /** Milliseconds since the phase began; feeds the elapsed-time label. */
   elapsedMs: number;
 }
 
 const TICK_MS = 1000;
 
 /**
- * Shared label for both surfaces: seconds only, so the working row stays
- * `⠋ 2s` instead of a sentence. Kept beside the reporter so the footer and the
- * working message never drift.
+ * Working-row label: `[2s]`, escalating to `[1m15s]` past a minute so a long
+ * startup chain or slow server stays readable. The brackets are the visual
+ * marker for "OpenViking is waiting", so they wrap both forms.
  */
 export function formatElapsed(elapsedMs: number): string {
-  return `${Math.floor(Math.max(0, elapsedMs) / 1000)}s`;
+  const total = Math.floor(Math.max(0, elapsedMs) / 1000);
+  if (total < 60) return `[${total}s]`;
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `[${minutes}m${seconds}s]`;
 }
 
 export class RecallProgress {
@@ -46,16 +48,6 @@ export class RecallProgress {
   private workingLabel = "";
   private ticker: ReturnType<typeof setInterval> | undefined;
   private ctx: any = null;
-  private readonly onChange: (
-    snapshot: ProgressSnapshot | null,
-    ctx: any,
-  ) => void;
-
-  constructor(
-    onChange: (snapshot: ProgressSnapshot | null, ctx: any) => void,
-  ) {
-    this.onChange = onChange;
-  }
 
   /** Enter a phase. Same-phase entries nest; `connect` never interrupts `recall`. */
   begin(ctx: any, phase: RecallPhase): void {
@@ -71,7 +63,6 @@ export class RecallProgress {
     this.ctx = ctx;
     this.setWorkingLabel();
     this.startTicker();
-    this.notify();
   }
 
   /**
@@ -88,7 +79,7 @@ export class RecallProgress {
     this.clear();
   }
 
-  /** Live snapshot for callers that render the footer on demand. */
+  /** Live snapshot for callers that report the phase. */
   snapshot(): ProgressSnapshot | null {
     return this.phase
       ? { phase: this.phase, elapsedMs: Date.now() - this.startedAt }
@@ -111,7 +102,6 @@ export class RecallProgress {
     }
     this.setWorkingMessage(undefined);
     this.workingLabel = "";
-    this.notify();
     this.ctx = null;
   }
 
@@ -120,7 +110,6 @@ export class RecallProgress {
     this.ticker = setInterval(() => {
       if (!this.phase) return;
       this.setWorkingLabel();
-      this.notify();
     }, TICK_MS);
     // Never hold the process open for a UI refresh (print/SDK modes).
     (this.ticker as any)?.unref?.();
@@ -130,14 +119,6 @@ export class RecallProgress {
     if (!this.ticker) return;
     clearInterval(this.ticker);
     this.ticker = undefined;
-  }
-
-  private notify(): void {
-    try {
-      this.onChange(this.snapshot(), this.ctx);
-    } catch {
-      // UI feedback is best effort; a host API change must not break recall.
-    }
   }
 
   private setWorkingLabel(): void {
@@ -152,7 +133,7 @@ export class RecallProgress {
       if (this.ctx?.hasUI === false) return;
       this.ctx?.ui?.setWorkingMessage?.(message);
     } catch {
-      // Non-TUI hosts: the footer path is already a no-op there.
+      // Non-TUI hosts have no working row; feedback is best effort.
     }
   }
 }

@@ -302,11 +302,12 @@ standard   OV ● ⇅340 · 3/6 · 18k/30k        (takeover on)
 verbose    OV ● ⇅340 · ctx 3/6 · 18k/30k · ⏸inj · pi-0f3a9…
 ```
 
-While a request waits on OpenViking, a transient `⟳ 2s` segment leads the row (the clock glyph plus elapsed seconds) and the working row shows its spinner with the same seconds, so the wait is visibly progressing rather than hung:
+The footer never animates: it shows standing state only. The two waits that sit between "user pressed enter" and the provider request — the first-turn startup chain and each recall retrieval — are reported in the working row instead, where pi's own spinner carries the activity and the message is the bracketed elapsed time. The brackets are the marker, so an OpenViking wait never looks like the plain `Working` row of an ordinary request:
 
 ```
-connecting   OV ● ⟳ 1s · ⇅340 · 18k/20k        ⠋ 1s
-recalling    OV ● ⟳ 3s · ⇅340 · 18k/20k        ⠋ 3s
+ordinary request   ⠋ Working
+startup chain      ⠋ [1s]
+recall retrieval   ⠋ [3s]   (past a minute: ⠋ [1m15s])
 ```
 
 | Segment      | Meaning                                                                          |
@@ -316,10 +317,9 @@ recalling    OV ● ⟳ 3s · ⇅340 · 18k/20k        ⠋ 3s
 | `c/l`        | Takeover coverage: covered/seen user turns (only while takeover is on)            |
 | `18k/30k`    | Token pressure vs the threshold that currently applies — takeover when on, commit when off |
 | `⏸inj`       | Context injection paused for this session                                        |
-| `⟳ 3s`       | Live request-path progress: startup chain on the first turn, recall retrieval before each request (transient; clock glyph plus seconds) |
 | `pi-0f3a9…`  | OpenViking session id (verbose only)                                             |
 
-`minimal` keeps the connection dot and the transient progress segment, and shows only anomalies otherwise: `⏸` for a paused injection and `⚠` when pressure reaches 80% of the threshold. Empty segments are omitted, token counts are humanized, and colors follow the active pi theme.
+`minimal` keeps the connection dot and shows only anomalies otherwise: `⏸` for a paused injection and `⚠` when pressure reaches 80% of the threshold. Empty segments are omitted, token counts are humanized, and colors follow the active pi theme.
 
 ## Compared to Pi's Built-in Memory
 
