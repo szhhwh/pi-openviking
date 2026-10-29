@@ -12,6 +12,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isCaptureEnabled } from "./shared/capture-utils.mjs";
 import { createDynamicLogger } from "./lib/dynamic-logger.mjs";
+import { getAgentPrompt, appendSystemPrompt } from "./lib/host-events.mjs";
 import { loadEffectiveConfig, saveConfig, type OVConfig } from "./config.js";
 import { listPending } from "./shared/pending-queue.mjs";
 import { OVClient } from "./client.js";
@@ -182,15 +183,9 @@ export default async function (pi: ExtensionAPI) {
 
     if (!connected || bypassedNow()) return;
 
-    // Queue recall for the context hook. Pi renders the user message before
-    // that hook, so recall latency does not delay the message appearing.
-    // Custom messages also start a run; take their text so recall sees the
-    // same prompt the agent does.
-    const prompt = event.messageType === "user"
-      ? event.prompt
-      : typeof event.message.content === "string"
-        ? event.message.content
-        : event.message.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+    // Queue recall for the context hook, after the host renders the prompt.
+    // Pi has user/custom variants; oh-my-pi supplies prompt without messageType.
+    const prompt = getAgentPrompt(event);
     if (!recallDisabled && prompt) {
       recall.queueSearch(prompt);
     }
@@ -209,7 +204,7 @@ export default async function (pi: ExtensionAPI) {
     if (!additions) return;
 
     return {
-      systemPrompt: event.systemPrompt + "\n\n" + additions,
+      systemPrompt: appendSystemPrompt(event.systemPrompt, additions),
     };
   });
 

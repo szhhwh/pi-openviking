@@ -107,6 +107,14 @@ pi
 
 The extension adds its segment to pi's footer and registers the `viking_*` tools on startup. While a submitted prompt is waiting on OpenViking — the first-turn startup chain or a recall search — the footer shows a clock glyph and elapsed seconds, and the working row shows its spinner with the same seconds, so a slow server never looks like a frozen prompt. Memories persist across sessions — no additional setup.
 
+### oh-my-pi compatibility
+
+This extension also works with [oh-my-pi](https://github.com/can1357/oh-my-pi) through its Pi extension compatibility loader. It uses the same `plugin.pi` configuration and `~/.openviking/pi-settings.json` sidecar on both hosts.
+
+Startup accepts oh-my-pi's direct `prompt` event as well as Pi's user/custom message events. OpenViking context preserves oh-my-pi's separate system-prompt blocks instead of coercing them into a comma-separated string. The Viking URI guard covers oh-my-pi's native `glob` tool alongside Pi's `find` and `ls` tools.
+
+Compatibility was exercised with the native extension loaders and event runners from oh-my-pi 18.13.3 and Pi 1.4.0 against a local mock OpenViking server: startup, tool registration/execution, current-prompt recall, turn capture, headless `/viking`, compaction, and shutdown. Hosts without `buildContextEntries()` still receive fresh recall; historical recall-ledger replay requires stable context-entry IDs and is skipped when those IDs are unavailable.
+
 ## Configuration Reference
 
 ### Tuning fields

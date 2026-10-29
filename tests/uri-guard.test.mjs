@@ -14,6 +14,35 @@ test("pi URI guard blocks builtin file tools on viking URIs", () => {
   assert.match(decision?.reason ?? "", /Use viking_read instead/)
 })
 
+test("oh-my-pi URI guard blocks glob on viking URI paths", () => {
+  const decision = guardVikingUriToolCall({
+    type: "tool_call",
+    toolName: "glob",
+    toolCallId: "call-glob",
+    input: { path: "viking://resources/project/**/*.md", hidden: true },
+  })
+
+  assert.equal(decision?.block, true)
+  assert.match(decision.reason, /Use viking_browse instead/)
+  assert.match(decision.reason, /viking_browse\(action="list", uri="viking:\/\/resources\/project\/\*\*\/\*\.md"\)/)
+  assert.equal(guardVikingUriToolCall({ toolName: "glob", input: { path: "/repo/**/*.md" } }), null)
+})
+
+test("URI guard preserves Pi find and ls routing alongside oh-my-pi glob", () => {
+  for (const toolName of ["find", "ls"]) {
+    const decision = guardVikingUriToolCall({
+      type: "tool_call",
+      toolName,
+      toolCallId: `call-${toolName}`,
+      input: { path: "viking://resources/project/" },
+    })
+
+    assert.equal(decision?.block, true)
+    assert.match(decision.reason, /Use viking_browse instead/)
+    assert.equal(guardVikingUriToolCall({ toolName, input: { path: "/repo" } }), null)
+  }
+})
+
 test("pi URI guard lets bash commands containing viking URI run", () => {
   const decision = guardVikingUriToolCall({
     type: "tool_call",
