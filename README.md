@@ -181,7 +181,6 @@ costs that one replay.
 
 | Field                    | Default    | Description                                                              |
 |--------------------------|------------|--------------------------------------------------------------------------|
-| `captureMode`            | `"semantic"` | `"semantic"` (always capture) or `"keyword"` (trigger-based)           |
 | `captureMaxLength`       | `24000`    | Max sanitized text length for the capture decision                       |
 | `captureAssistantTurns`  | `true`     | Include assistant turns (text + tool USE inputs)                         |
 | `captureToolResults`     | `false`    | Include tool result output. Off by default: the tool call's input is still captured, the result body is not |
@@ -299,7 +298,7 @@ The extension registers 7 tools that pi's model can invoke on demand:
 | Section        | What it holds                                                                 |
 |----------------|-------------------------------------------------------------------------------|
 | Session        | context-injection toggle (session only) and *commit now*                      |
-| Capture        | what gets written, extraction mode, commit threshold and tail                 |
+| Capture        | what gets written, commit threshold and tail                                  |
 | Recall         | token budget, result quota, score threshold, abstract cap, ledger             |
 | Context        | takeover switches, profile and resume budgets                                 |
 | Interface      | footer density and notification level                                         |

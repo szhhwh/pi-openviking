@@ -360,7 +360,7 @@ function captureSection(page: PageContext): SectionSpec {
   return {
     id: "capture",
     title: "Capture",
-    summary: () => `${onOff(config.autoCapture)} · ${config.captureMode}`,
+    summary: () => onOff(config.autoCapture),
     items: () => sectionItems([
       {
         id: "autoCapture",
@@ -382,14 +382,6 @@ function captureSection(page: PageContext): SectionSpec {
         currentValue: onOff(config.captureToolResults),
         values: ["on", "off"],
         description: "Also capture tool output. Heavier, but preserves what the agent actually did.",
-      },
-      {
-        id: "captureMode",
-        label: "extraction mode",
-        currentValue: config.captureMode,
-        values: ["semantic", "keyword"],
-        description:
-          "semantic: server-side semantic processing of captured turns. keyword: plain keyword capture.",
       },
       {
         id: "commitTokenThreshold",
@@ -694,7 +686,6 @@ const SETTERS: Record<SettingKey, Setter> = {
   autoCapture: (c, v) => { c.autoCapture = v === "on"; },
   captureAssistantTurns: (c, v) => { c.captureAssistantTurns = v === "on"; },
   captureToolResults: (c, v) => { c.captureToolResults = v === "on"; },
-  captureMode: (c, v) => { c.captureMode = v === "keyword" ? "keyword" : "semantic"; },
   commitTokenThreshold: (c, v) => { c.commitTokenThreshold = asInt(v); },
   commitKeepRecentCount: (c, v) => { c.commitKeepRecentCount = asInt(v); },
   recallTokenBudget: (c, v) => { c.recallTokenBudget = asInt(v); },

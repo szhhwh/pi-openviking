@@ -48,7 +48,6 @@ export interface OVConfig {
   takeoverOverviewPollMs: number;
   takeoverOverviewPollMax: number;
   captureToolResults: boolean;
-  captureMode: "semantic" | "keyword";
   captureMaxLength: number;
   captureToolMaxChars: number;
   captureAssistantTurns: boolean;
