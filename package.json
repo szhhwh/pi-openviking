@@ -1,6 +1,6 @@
 {
   "name": "pi-openviking",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pi extension: OpenViking persistent memory (viking_* tools, /viking command). Mirror of volcengine/OpenViking examples/pi-coding-agent-extension, packaged for `pi install git:`.",
   "keywords": [
     "pi-package"
