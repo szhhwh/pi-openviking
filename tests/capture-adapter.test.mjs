@@ -39,7 +39,7 @@ for (const role of ["toolResult", "tool_result", "tool"]) {
           message: { role, toolCallId: "call-1", toolName: "bash", content: output, isError },
         },
       ];
-      const cfg = { captureAssistantTurns: true, captureToolMaxChars: 2000 };
+      const cfg = { captureAssistantTurns: true, captureToolMaxChars: 2000, captureToolResults: true };
       const result = extractBranchCapturePayloads(branch, 0, cfg);
       assert.deepEqual(result.payloads.map((payload) => payload.role), ["user", "assistant", "user"]);
       assert.deepEqual(result.payloads[1].parts, [{
@@ -113,7 +113,7 @@ test("tool-only payloads carry tool output once, not duplicated as text", () => 
       },
     ],
     0,
-    { captureAssistantTurns: true, captureToolMaxChars: 1000000 },
+    { captureAssistantTurns: true, captureToolMaxChars: 1000000, captureToolResults: true },
   );
 
   const parts = payloads.flatMap((payload) => payload.parts || []);
@@ -121,4 +121,58 @@ test("tool-only payloads carry tool output once, not duplicated as text", () => 
   const toolParts = parts.filter((part) => part.type === "tool");
   assert.equal(toolParts.length, 1);
   assert.equal(toolParts[0].tool_output, output);
+});
+
+test("tool results stay off the wire by default", () => {
+  const output = [{ type: "text", text: "NOISY-TOOL-OUTPUT-42" }];
+  const branch = [
+    { type: "message", message: { role: "user", content: "Run the command and report back." } },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "echo hi" } }],
+      },
+    },
+    { type: "message", message: { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: output } },
+  ];
+
+  const cfg = { captureAssistantTurns: true, captureToolMaxChars: 2000 };
+  const { payloads } = extractBranchCapturePayloads(branch, 0, cfg);
+
+  assert.deepEqual(payloads.map((payload) => payload.role), ["user", "assistant"]);
+  assert.equal(JSON.stringify(payloads).includes("NOISY-TOOL-OUTPUT-42"), false);
+});
+
+test("a mixed message keeps its text and tool call but drops the tool output", () => {
+  const branch = [{
+    type: "message",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Here is the plan." },
+        { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "ls" } },
+        { type: "tool_result", tool_use_id: "call-1", output: "NOISY-OUTPUT-42" },
+      ],
+    },
+  }];
+
+  const { payloads } = extractBranchCapturePayloads(branch, 0, { captureAssistantTurns: true });
+
+  assert.equal(payloads.length, 1);
+  assert.deepEqual(payloads[0].parts.map((part) => part.type), ["text", "tool"]);
+  assert.equal(payloads[0].parts[0].text, "Here is the plan.");
+  assert.equal(JSON.stringify(payloads).includes("NOISY-OUTPUT-42"), false);
+});
+
+test("skipped tool results still advance the watermark", () => {
+  const branch = [
+    { type: "message", message: { role: "user", content: "Already synced prompt." } },
+    { type: "message", message: { role: "toolResult", toolCallId: "call-1", content: "output" } },
+  ];
+
+  const result = extractBranchCapturePayloads(branch, 1, {});
+
+  assert.equal(result.payloads.length, 0);
+  assert.equal(result.nextEntryCount, 2);
 });

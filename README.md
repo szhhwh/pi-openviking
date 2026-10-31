@@ -167,6 +167,16 @@ Explicit `recallLimit` values from 1 through 5 produce an effective total
 quota of 6 because each coding category keeps one retrieval slot. Direct API
 integrations should configure category `quotas` when they need exact ceilings.
 
+### Capture watermark
+
+`turn_end` mirrors the branch entries past the capture watermark. Without
+takeover that position is persisted per session in
+`~/.openviking/pi-sync-watermark/<session>.json` (entry count plus the id of
+the entry at it). A `pi -c` / `omp -c` continuation resumes from it instead of
+re-uploading the branch OpenViking already has; a rewritten branch (compaction,
+`/tree` navigation) fails the id check and replays once. Deleting the file only
+costs that one replay.
+
 ### Capture tuning
 
 | Field                    | Default    | Description                                                              |
@@ -174,7 +184,7 @@ integrations should configure category `quotas` when they need exact ceilings.
 | `captureMode`            | `"semantic"` | `"semantic"` (always capture) or `"keyword"` (trigger-based)           |
 | `captureMaxLength`       | `24000`    | Max sanitized text length for the capture decision                       |
 | `captureAssistantTurns`  | `true`     | Include assistant turns (text + tool USE inputs)                         |
-| `captureToolResults`     | `false`    | Include tool result output (noisy — off by default)                      |
+| `captureToolResults`     | `false`    | Include tool result output. Off by default: the tool call's input is still captured, the result body is not |
 | `captureToolMaxChars`    | `1000000`  | Guard cap on one tool part's `tool_output`; the server externalizes oversized output |
 | `commitTokenThreshold`   | `20000`    | Pending-token threshold for client-driven commit                         |
 | `commitKeepRecentCount`  | `10`       | Live tail kept after commit                                              |
@@ -373,6 +383,7 @@ pi-coding-agent-extension/
 ├── lib/pi-settings.mjs   # Canonical list of settings the panel owns
 ├── lib/takeover-core.mjs # Pure context-takeover state machine
 ├── lib/recall-ledger.mjs # Injected recall blocks, replayed to keep prompt caches warm
+├── lib/sync-watermark.mjs # Per-session capture watermark so continuations do not replay the branch
 ├── lib/dynamic-logger.mjs # Debug logger whose path follows the live config
 ├── scripts/doctor.mjs   # Full diagnostics host for the shared doctor core
 ├── index.ts             # Extension entry point (event handlers + /viking command)

@@ -79,7 +79,7 @@ The two waits between "user pressed enter" and the provider request are startup 
 
 The OV session id is `pi-<pi session id>`, derived locally by the shared `deriveHarnessSessionId`. Nothing round-trips to open a session: the id is deterministic, so the first write can carry it.
 
-**Capture.** `turn_end` hands the whole branch to `extractBranchCapturePayloads` (`lib/capture-adapter.mjs`), which takes the entries past `syncedEntryCount`, normalizes roles, renders tool parts with bounded input and output, and decides entry by entry whether to capture. There are two decision modes. Normally it is the shared `shouldCaptureText` heuristic. Under takeover it is a faithful mode that drops only empty text, slash commands and OpenViking's own status messages: once the boundary advances, a short acknowledgement may be represented to the model *only* through the archive overview, so discarding it as low-signal would lose it outright. A branch shorter than the watermark means pi navigated to a different branch, so the watermark resets to zero and the branch is re-extracted from the start.
+**Capture.** `turn_end` hands the whole branch to `extractBranchCapturePayloads` (`lib/capture-adapter.mjs`), which takes the entries past `syncedEntryCount`, normalizes roles, renders tool parts with bounded input and output, and decides entry by entry whether to capture. `captureToolResults` is off by default: result-only entries and tool `output` parts are dropped there, while the tool call's input still travels, because raw output dominates both the wire bytes and the pending-token count that drives commits. There are two decision modes. Normally it is the shared `shouldCaptureText` heuristic. Under takeover it is a faithful mode that drops only empty text, slash commands and OpenViking's own status messages: once the boundary advances, a short acknowledgement may be represented to the model *only* through the archive overview, so discarding it as low-signal would lose it outright. A branch shorter than the watermark means pi navigated to a different branch, so the watermark resets to zero and the branch is re-extracted from the start.
 
 **Delivery.** Payloads leave in one batched request through the shared `sendSessionMessages`. Retryable failures are written to the shared disk pending queue and replayed later. A non-retryable rejection counts as accepted, so the watermark advances past payloads the server will never take rather than re-sending them every turn. The watermark only moves when the whole extraction was accepted.
 
@@ -102,7 +102,7 @@ Context takeover makes OpenViking the authoritative long-term store for a pi ses
 | `fingerprint` | Fingerprint of the last covered message, for branch-mismatch detection |
 | `pendingTokens` | Estimated synced token pressure since the last successful advance |
 | `lastSeenUserTurns` | User turns counted in the most recent `context` hook |
-| `syncedEntryCount` | Pi branch watermark, restored across `pi -p` / `pi -c` processes |
+| `syncedEntryCount` | Pi branch watermark, persisted with the takeover state so `pi -c` resumes instead of replaying |
 
 State is persisted as a pi custom entry:
 
@@ -110,7 +110,7 @@ State is persisted as a pi custom entry:
 pi.appendEntry("ov-takeover", state)
 ```
 
-At startup the extension scans the branch from the end for the newest such entry and restores both the boundary and `SyncManager`'s watermark, so a `pi -c` continuation does not resend branch entries OpenViking already has.
+At startup the extension scans the branch from the end for the newest such entry and restores both the boundary and `SyncManager`'s watermark, so a `pi -c` continuation does not resend branch entries OpenViking already has. Without takeover there is no such entry: `lib/sync-watermark.mjs` supplies the same resume point from a per-session file.
 
 #### Runtime flow
 
@@ -202,6 +202,10 @@ The entry point. It loads the config, constructs the modules, and registers hand
 
 The `/viking` panel. Seven top-level rows (Session, Capture, Recall, Context, Interface, Diagnostics, Advanced) each open their own `SettingsList`; a section closes by reporting its summary back, so the parent row always shows the current value. Editable ids live in a `SETTERS` table, and opening the panel warns if a row has drifted away from its setter. `commit now` closes its submenu before the network call and reports through `notify`, because a submenu that keeps focus swallows every key. The Diagnostics rows read config-derived values from the live object and count-derived values from the snapshot taken when the panel opened. Doctor output is a small pager whose child process is started once per panel.
 
+### lib/sync-watermark.mjs
+
+The resume point for sessions that do not use takeover. `SyncManager.syncedEntryCount` lives in the process, and takeover persists its own copy in the branch; with takeover off nothing else did, so a `pi -c` / `omp -c` continuation started at entry 0 and its first `turn_end` re-uploaded the whole branch. `index.ts` writes `{count, lastEntryId, ovSessionId}` to `~/.openviking/pi-sync-watermark/<session>.json` after each turn that moves the watermark, atomically and with the same 0700/0600 modes as the recall ledger. On startup the watermark is restored only when the entry at that position still carries the recorded id and the OpenViking session matches; a rewritten branch (compaction, `/tree` navigation) fails the check and replays instead of silently skipping capture. A missing or corrupt file costs one replay.
+
 ### lib/pi-config.mjs
 
 The untyped resolution layer behind `config.ts`, kept in `lib/` so `scripts/doctor.mjs` — a plain Node entrypoint that cannot import TypeScript — resolves exactly what the extension does. It merges the same layers as `buildPluginConfig`, forces pi's takeover default to off unless a layer (including `ov.conf`) set it, applies the sidecar allowlist, and re-resolves the effective peer when the sidecar changes `workspacePeer`. Saves persist only the changed key, so untouched values keep coming from env and `ovcli.conf`; legacy keys are deleted on every save. The key list itself lives in `lib/pi-settings.mjs`; `settings.ts` types its setter table against that union, so a key without a setter (or a setter without a key) fails typechecking.
@@ -212,11 +216,11 @@ The doctor host: install checks, the pi config sections (credential sources, pee
 
 ## Event flow
 
-**Session start.** Bypass check, then health check; on failure everything after this is a no-op. Open the recall ledger, derive the OV session id, replay anything the pending queue still holds. Build the profile block. With takeover on, restore the boundary from the branch and hand `SyncManager` its watermark; with takeover off, fetch the archive overview for resume rehydration instead. Register the tools.
+**Session start.** Bypass check, then health check; on failure everything after this is a no-op. Open the recall ledger, derive the OV session id, replay anything the pending queue still holds. Build the profile block. With takeover on, restore the boundary from the branch and hand `SyncManager` its watermark; with takeover off, restore the watermark from `lib/sync-watermark.mjs` and fetch the archive overview for resume rehydration. Register the tools.
 
 **Per prompt.** `before_agent_start` awaits startup, records the prompt for recall without any I/O, and returns the composed system prompt. Pi renders the user message. Then, for each LLM iteration, the `context` hook fires: the first one runs the search, the takeover transform replaces covered history with the overview message, and recall is injected — fresh into the newest user message, replayed from the ledger into the older ones. `agent_end` clears the cache.
 
-**Per turn.** `turn_end` extracts everything past the watermark from the branch, sanitizes and filters it, sends it as one batch (or queues it), advances the watermark, and estimates the tokens it just synced. Outside takeover, that is followed by a threshold check against the server's `pending_tokens`. Under takeover, the estimate is added to the pending pressure, which may trigger a flush, commit and boundary advance.
+**Per turn.** `turn_end` extracts everything past the watermark from the branch, sanitizes and filters it, sends it as one batch (or queues it), advances and persists the watermark, and estimates the tokens it just synced. Outside takeover, that is followed by a threshold check against the server's `pending_tokens`. Under takeover, the estimate is added to the pending pressure, which may trigger a flush, commit and boundary advance.
 
 **Pre-compact.** Under takeover, pi is handed the OV overview as its compaction summary, or nothing at all if any step failed. Outside takeover, the extension commits so that content pi is about to rewrite is preserved as an archive, then caches the new overview for the next system prompt.
 

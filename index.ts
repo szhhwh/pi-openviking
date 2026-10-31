@@ -19,6 +19,7 @@ import { OVClient } from "./client.js";
 import type { OvHttpRequestOptions } from "./client.js";
 import { RecallManager } from "./recall.js";
 import { RecallLedger } from "./lib/recall-ledger.mjs";
+import { loadWatermark, saveWatermark, watermarkMatches } from "./lib/sync-watermark.mjs";
 import { RecallProgress } from "./progress.js";
 import { SyncManager } from "./sync.js";
 import { buildProfileBlock } from "./shared/profile-inject.mjs";
@@ -65,6 +66,25 @@ export default async function (pi: ExtensionAPI) {
   // <openviking-context> blocks are injected — recall search, profile and
   // archive overview are all gated. Sync and takeover keep running.
   let recallDisabled = false;
+  // pi session the capture watermark belongs to, and the count last written.
+  // Without takeover nothing else persists the watermark, so a continuation
+  // would otherwise replay the whole branch on its first turn_end.
+  let boundPiSessionId: string | null = null;
+  let savedWatermarkCount = -1;
+
+  const persistWatermark = (branch: readonly unknown[]): void => {
+    if (config.takeoverEnabled || !boundPiSessionId || !sync.sessionId) return;
+    const count = sync.syncedCount;
+    if (count <= 0 || count === savedWatermarkCount) return;
+    const last = branch[count - 1];
+    const entryId = last && typeof last === "object" && "id" in last ? last.id : undefined;
+    const saved = saveWatermark(boundPiSessionId, {
+      count,
+      lastEntryId: typeof entryId === "string" ? entryId : "",
+      ovSessionId: sync.sessionId,
+    });
+    if (saved) savedWatermarkCount = count;
+  };
 
   // The footer shows pressure against whichever threshold currently applies:
   // takeover's own counter while takeover owns the boundary, the server's
@@ -107,6 +127,7 @@ export default async function (pi: ExtensionAPI) {
 
       // Ensure OV session
       const piSessionId = ctx.sessionManager.getSessionId();
+      boundPiSessionId = piSessionId;
       recall.openLedger(piSessionId);
       const ok = await sync.ensureSession(piSessionId);
       if (!ok) {
@@ -126,9 +147,20 @@ export default async function (pi: ExtensionAPI) {
       if (config.takeoverEnabled) {
         takeover.restore(branch);
         sync.restoreWatermark(takeover.state.syncedEntryCount);
-      } else if (sync.sessionId) {
-        // Resume rehydration — fetch archive overview if session was previously committed.
-        archiveOverview = await fetchArchiveOverview(client, sync.sessionId, config);
+      } else {
+        // A continuation is a new process that starts the watermark at 0.
+        // Restore the branch position already mirrored, or the first turn_end
+        // re-uploads every entry from the previous run. A rewritten branch
+        // fails the id check and replays instead of skipping.
+        const watermark = loadWatermark(piSessionId);
+        if (watermark && watermarkMatches(watermark, branch, sync.sessionId ?? "")) {
+          sync.restoreWatermark(watermark.count);
+          savedWatermarkCount = watermark.count;
+        }
+        if (sync.sessionId) {
+          // Resume rehydration — fetch archive overview if session was previously committed.
+          archiveOverview = await fetchArchiveOverview(client, sync.sessionId, config);
+        }
       }
 
       // Register tools (also needed for pi -c continuations).
@@ -287,6 +319,7 @@ export default async function (pi: ExtensionAPI) {
 
     const branch = ctx.sessionManager.getBranch();
     const result = await sync.syncBranch(branch);
+    persistWatermark(branch);
     logger.log("turn_end", { added: result.added, tokens: result.tokens });
     await takeover.onTurnSynced(result.tokens);
     refreshStatus(ctx);
