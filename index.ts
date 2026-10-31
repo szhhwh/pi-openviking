@@ -66,6 +66,11 @@ export default async function (pi: ExtensionAPI) {
   // <openviking-context> blocks are injected — recall search, profile and
   // archive overview are all gated. Sync and takeover keep running.
   let recallDisabled = false;
+  // Messages accepted in the most recent turn, as the footer's `↩` segment
+  // reports them (upstream semantics). Refreshes that do not come from a
+  // turn_end — panel saves, commit now — reuse the last value instead of
+  // resetting it to zero.
+  let lastTurnAdded = 0;
   // pi session the capture watermark belongs to, and the count last written.
   // Without takeover nothing else persists the watermark, so a continuation
   // would otherwise replay the whole branch on its first turn_end.
@@ -102,7 +107,7 @@ export default async function (pi: ExtensionAPI) {
 
   const refreshStatus = (ctx: any) =>
     updateStatus(
-      ctx, connected, sync.syncedCount, sync.sessionId, config,
+      ctx, connected, lastTurnAdded, sync.sessionId, config,
       statusState(), recallDisabled,
     );
 
@@ -168,7 +173,7 @@ export default async function (pi: ExtensionAPI) {
         registerTools(pi, client, sync);
         toolsRegistered = true;
       }
-      updateStatus(ctx, connected, sync.syncedCount, sync.sessionId, config, statusState(), recallDisabled);
+      updateStatus(ctx, connected, 0, sync.sessionId, config, statusState(), recallDisabled);
 
       started = true;
       if (config.logLevel === "info") {
@@ -320,6 +325,7 @@ export default async function (pi: ExtensionAPI) {
     const branch = ctx.sessionManager.getBranch();
     const result = await sync.syncBranch(branch);
     persistWatermark(branch);
+    lastTurnAdded = result.added;
     logger.log("turn_end", { added: result.added, tokens: result.tokens });
     await takeover.onTurnSynced(result.tokens);
     refreshStatus(ctx);
@@ -537,7 +543,7 @@ function captureStatusTheme(ctx: any): void {
 export function updateStatus(
   ctx: any,
   connected: boolean,
-  synced: number,
+  added: number,
   sessionId: string | null,
   config: OVConfig,
   takeoverState?: { pendingTokens?: number; coveredUserTurns?: number; lastSeenUserTurns?: number },
@@ -573,10 +579,11 @@ export function updateStatus(
       return;
     }
 
-    // Session watermark, not last turn's delta: one meaning across refreshes.
-    if (synced > 0) {
-      parts.push(`${statusColor("dim", "⇅")}${synced}`);
-    }
+    // Messages accepted in the last turn (upstream's `↩`), not the session
+    // watermark: the watermark advances past every branch entry, including the
+    // custom tool-execution records and dropped tool results the adapter never
+    // sends, so it climbs while nothing is being uploaded.
+    parts.push(`${statusColor("dim", "↩")}${added}`);
 
     if (config.takeoverEnabled && takeoverState) {
       const covered = takeoverState.coveredUserTurns ?? 0;

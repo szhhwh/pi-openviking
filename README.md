@@ -315,9 +315,9 @@ Booleans and enums cycle with `Enter`/`Space`; numeric values open a preset pick
 ```
 hidden     (no segment)
 minimal    OV ●
-standard   OV ● ⇅340 · 18k/20k              (takeover off, the default)
-standard   OV ● ⇅340 · 3/6 · 18k/30k        (takeover on)
-verbose    OV ● ⇅340 · ctx 3/6 · 18k/30k · ⏸inj · pi-0f3a9…
+standard   OV ● ↩12 · 18k/20k               (takeover off, the default)
+standard   OV ● ↩12 · 3/6 · 18k/30k         (takeover on)
+verbose    OV ● ↩12 · ctx 3/6 · 18k/30k · ⏸inj · pi-0f3a9…
 ```
 
 The footer never animates: it shows standing state only. The two waits that sit between "user pressed enter" and the provider request — the first-turn startup chain and each recall retrieval — are reported in the working row instead, where pi's own spinner carries the activity and the message is the bracketed elapsed time. The brackets are the marker, so an OpenViking wait never looks like the plain `Working` row of an ordinary request:
@@ -331,7 +331,7 @@ recall retrieval   ⠋ [3s]   (past a minute: ⠋ [1m15s])
 | Segment      | Meaning                                                                          |
 |--------------|----------------------------------------------------------------------------------|
 | `OV ●` / `OV ○` | Connection state (green/red)                                                  |
-| `⇅n`         | Entries synced in this session (the sync watermark, not a per-turn delta)         |
+| `↩n`         | Messages accepted in the last turn (sent or queued; resets every turn)            |
 | `c/l`        | Takeover coverage: covered/seen user turns (only while takeover is on)            |
 | `18k/30k`    | Token pressure vs the threshold that currently applies — takeover when on, commit when off |
 | `⏸inj`       | Context injection paused for this session                                        |
